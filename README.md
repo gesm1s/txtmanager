@@ -13,6 +13,7 @@ Built by reverse-engineering the undocumented `KeyboardServices/TextReplacements
 ## Features
 
 - 📋 View all your text replacements in a clean GUI
+- 🇳🇴/🇬🇧 Supporte norwegian and english
 - ➕ Add new shortcuts and phrases
 - ✏️ Edit existing entries with double-click
 - 🗑 Delete entries instantly
