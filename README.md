@@ -36,43 +36,34 @@ Built by reverse-engineering the undocumented `KeyboardServices/TextReplacements
 
 ## Installation
 
+### Download the app (recommended)
+
+1. Download `Txtmanager.app.zip` from the [latest release](https://github.com/gesm1s/txtmanager/releases/latest)
+2. Unzip and move `Txtmanager.app` to `/Applications/`
+3. Launch from Finder or Launchpad
+
+### Run from source
+
 1. Clone the repository:
 ```bash
 git clone https://github.com/gesm1s/txtmanager.git
 cd txtmanager
 ```
 
-2. Run the app:
+2. Run:
 ```bash
 python3 teksterstatning_gui.py
 ```
 
----
+### Build the app yourself
 
-## Optional: Create a clickable app
-
-You can package TxtManager as a double-clickable macOS app:
+Requires [py2app](https://py2app.readthedocs.io/):
 
 ```bash
-mkdir -p ~/Applications/Txtmanager.app/Contents/MacOS
-cp teksterstatning_gui.py ~/Applications/Txtmanager.app/Contents/MacOS/
-
-cat > ~/Applications/Txtmanager.app/Contents/MacOS/run << 'EOF'
-#!/bin/bash
-DIR="$(cd "$(dirname "$0")" && pwd)"
-/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 "$DIR/teksterstatning_gui.py"
-EOF
-
-chmod +x ~/Applications/Txtmanager.app/Contents/MacOS/run
+pip3 install py2app
+python3 setup.py py2app
+cp -R dist/Txtmanager.app /Applications/
 ```
-
-> Adjust the Python path to match your installation (`which python3`).
-
-An app icon (`txtmanager.svg`) is included. Convert it to PNG with:
-```bash
-qlmanage -t -s 1024 -o ~/Desktop ~/Desktop/txtmanager.svg
-```
-Then paste it onto the app via **Get Info** (Cmd+I).
 
 ---
 
@@ -84,7 +75,7 @@ Apple stores text replacements in a SQLite database at:
 ~/Library/KeyboardServices/TextReplacements.db
 ```
 
-TxtManager reads and writes directly to this database using the `ZTEXTREPLACEMENTENTRY` table. After each change, it restarts `keyboardservicesd` so changes take effect immediately without restarting your Mac.
+TxtManager reads and writes directly to this database using the `ZTEXTREPLACEMENTENTRY` table. After each change, it stops `keyboardservicesd` so the daemon restarts with the updated data — no reboot required.
 
 Changes are picked up by iCloud and synced to all your Apple devices automatically.
 

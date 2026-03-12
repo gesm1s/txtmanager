@@ -1,0 +1,5 @@
+Txtmanager.app.zip
+build/
+dist/
+icon.iconset/
+*.icns

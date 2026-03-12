@@ -138,10 +138,15 @@ def delete_item(pk):
     con.commit()
     con.close()
 
-def restart_keyboard_daemon():
+def stop_keyboard_daemon():
     try:
         pid = subprocess.check_output(["pgrep", "keyboardservicesd"]).decode().strip()
         subprocess.run(["kill", pid])
+        for _ in range(20):
+            time.sleep(0.25)
+            if subprocess.run(["pgrep", "keyboardservicesd"],
+                              capture_output=True).returncode != 0:
+                break
     except Exception:
         pass
 
@@ -405,11 +410,11 @@ class App(tk.Tk):
         new_val  = dlg.result
         affected = [i for i in self.items if token in i.get("phrase", "")]
         backup()
+        stop_keyboard_daemon()
         for item in affected:
             new_phrase = item["phrase"].replace(token, new_val)
             update_item(item["pk"], item["shortcut"], new_phrase)
             item["phrase"] = new_phrase
-        restart_keyboard_daemon()
         self._refresh_table()
         self._refresh_tokens()
         self._status(t("status_replaced", a=token, b=new_val, n=len(affected)))
@@ -423,8 +428,8 @@ class App(tk.Tk):
             messagebox.showerror(t("err_exists_title"), t("err_exists", s=sc))
             return
         backup()
+        stop_keyboard_daemon()
         insert_item(sc, ph)
-        restart_keyboard_daemon()
         self._load()
         self._status(t("status_added", s=sc))
 
@@ -438,8 +443,8 @@ class App(tk.Tk):
         if not dlg.result:
             return
         backup()
+        stop_keyboard_daemon()
         update_item(item["pk"], dlg.result[0], dlg.result[1])
-        restart_keyboard_daemon()
         self._load()
         self._status(t("status_edited", s=item["shortcut"]))
 
@@ -451,8 +456,8 @@ class App(tk.Tk):
         if not messagebox.askyesno(t("confirm_title"), t("confirm_delete", s=item["shortcut"])):
             return
         backup()
+        stop_keyboard_daemon()
         delete_item(item["pk"])
-        restart_keyboard_daemon()
         self._load()
         self._status(t("status_deleted", s=item["shortcut"]))
 
@@ -479,9 +484,9 @@ class App(tk.Tk):
                 messagebox.showinfo(t("err_no_match_title"), t("err_no_match", f=f))
                 return
             backup()
+            stop_keyboard_daemon()
             for item in affected:
                 update_item(item["pk"], item["shortcut"], item["phrase"].replace(f, r))
-            restart_keyboard_daemon()
             self._load()
             self._status(t("status_findreplace", n=len(affected)))
             win.destroy()
