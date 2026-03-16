@@ -40,7 +40,11 @@ Built by reverse-engineering the undocumented `KeyboardServices/TextReplacements
 
 1. Download `Txtmanager.app.zip` from the [latest release](https://github.com/gesm1s/txtmanager/releases/latest)
 2. Unzip and move `Txtmanager.app` to `/Applications/`
-3. Launch from Finder or Launchpad
+3. Remove the macOS quarantine flag (required because the app is not signed with an Apple Developer certificate):
+```bash
+xattr -cr /Applications/Txtmanager.app
+```
+4. Launch from Finder or Launchpad
 
 ### Run from source
 
