@@ -366,6 +366,7 @@ class App(tk.Tk):
 
     def _load(self):
         try:
+            stop_keyboard_daemon()
             self.items = read_items()
             self._refresh_table()
             self._refresh_tokens()
