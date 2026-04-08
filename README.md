@@ -79,7 +79,7 @@ Apple stores text replacements in a SQLite database at:
 ~/Library/KeyboardServices/TextReplacements.db
 ```
 
-TxtManager reads and writes directly to this database using the `ZTEXTREPLACEMENTENTRY` table. After each change, it stops `keyboardservicesd` so the daemon restarts with the updated data — no reboot required.
+TxtManager reads and writes directly to this database using the `ZTEXTREPLACEMENTENTRY` table. After each change, it performs a WAL checkpoint to ensure all data is written to the main database file, then stops `keyboardservicesd` so the daemon restarts with the updated data — no reboot required.
 
 Changes are picked up by iCloud and synced to all your Apple devices automatically.
 

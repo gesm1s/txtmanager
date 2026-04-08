@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TxtManager for macOS 15+/26
+TxtManager 1.1.0 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
@@ -97,6 +97,12 @@ def backup():
 def get_conn():
     return sqlite3.connect(DB_PATH)
 
+def wal_checkpoint():
+    """Force WAL content into main database file so keyboardservicesd sees updates."""
+    con = get_conn()
+    con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    con.close()
+
 def read_items():
     con = get_conn()
     rows = con.execute("""
@@ -121,6 +127,7 @@ def insert_item(shortcut, phrase):
     con.execute("UPDATE Z_PRIMARYKEY SET Z_MAX=? WHERE Z_ENT=1", (pk,))
     con.commit()
     con.close()
+    wal_checkpoint()
 
 def update_item(pk, shortcut, phrase):
     con = get_conn()
@@ -131,12 +138,14 @@ def update_item(pk, shortcut, phrase):
     """, (shortcut, phrase, time.time() - CD_EPOCH, pk))
     con.commit()
     con.close()
+    wal_checkpoint()
 
 def delete_item(pk):
     con = get_conn()
     con.execute("DELETE FROM ZTEXTREPLACEMENTENTRY WHERE Z_PK=?", (pk,))
     con.commit()
     con.close()
+    wal_checkpoint()
 
 def stop_keyboard_daemon():
     try:
