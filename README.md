@@ -18,7 +18,10 @@ Built by reverse-engineering the undocumented `KeyboardServices/TextReplacements
 - ✏️ Edit existing entries with double-click
 - 🗑 Delete entries instantly
 - 🔄 Find and replace text across all phrases at once
+- 🔎 Live preview while typing in Find & Replace (the main list filters instantly)
 - 🔍 Auto-detects repeated values across phrases for batch updating (e.g. version numbers, device names)
+- 🖱 Click repeated values to edit directly in the side panel and apply replacement immediately
+- 🛡 Post-save verification warns if an update appears to be overwritten by sync/daemon state
 - 💾 Writes directly to macOS — changes are active immediately
 - ☁️ Syncs automatically to iPhone/iPad via iCloud/CloudKit
 - 🔒 Creates a timestamped backup before every save
@@ -98,12 +101,26 @@ Changes are picked up by iCloud and synced to all your Apple devices automatical
 
 ## Batch update
 
-The **Repeated values** panel on the right automatically detects any text that appears in two or more phrases — version numbers, device names, email addresses, etc. Double-click any value to replace it everywhere at once.
+The **Repeated values** panel on the right automatically detects any text that appears in two or more phrases — version numbers, device names, email addresses, etc.
+
+You can now:
+
+- Click a value to select it
+- Edit it directly in the right-side input field
+- Press **Replace selected expression** (or Enter) to update all matching phrases
 
 This is especially useful for QA documentation where you need to update things like:
 
 - `Arena Mobil versjon 4.50.31` → `Arena Mobil versjon 4.51.0`
 - `iPhone 16e (iOS 26.3)` → `iPhone 16e (iOS 26.4)`
+
+## Find & Replace live preview
+
+When opening **Find & Replace**, typing in the **Find** field now:
+
+- Filters the main shortcut list live
+- Shows a running match counter (`Matches: X`)
+- Restores your original list filter when the dialog is closed
 
 ---
 

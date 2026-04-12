@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TxtManager 1.1.0 for macOS 15+/26
+TxtManager 1.1.1 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
@@ -33,6 +33,10 @@ T = {
     "repeated_title":     {"no": "Gjentakende verdier",    "en": "Repeated values"},
     "repeated_hint":      {"no": "Dobbeltklikk for å erstatte i alle fraser",
                            "en": "Double-click to replace in all phrases"},
+    "repeated_selected":  {"no": "Valgt uttrykk:",         "en": "Selected expression:"},
+    "repeated_new_value": {"no": "Ny verdi:",              "en": "New value:"},
+    "repeated_apply":     {"no": "Erstatt valgt uttrykk",  "en": "Replace selected expression"},
+    "repeated_none":      {"no": "(ingen valgt)",          "en": "(none selected)"},
     "status_loaded":      {"no": "Lastet {n} snarveier direkte fra macOS.",
                            "en": "Loaded {n} shortcuts directly from macOS."},
     "status_added":       {"no": "✓ La til '{s}'.",        "en": "✓ Added '{s}'."},
@@ -64,6 +68,9 @@ T = {
     "dlg_missing_title":  {"no": "Mangler data",           "en": "Missing data"},
     "dlg_missing_val":    {"no": "Skriv inn ny verdi.",    "en": "Please enter a new value."},
     "dlg_missing_val_t":  {"no": "Mangler verdi",          "en": "Missing value"},
+    "select_expression":  {"no": "Velg et uttrykk fra listen først.",
+                             "en": "Select an expression from the list first."},
+    "select_expression_t": {"no": "Velg uttrykk",           "en": "Select expression"},
     "batch_title":        {"no": "Oppdater alle forekomster", "en": "Update all occurrences"},
     "batch_replace":      {"no": "Erstatt ({n} fraser):",  "en": "Replace ({n} phrases):"},
     "batch_with":         {"no": "Med:",                   "en": "With:"},
@@ -72,6 +79,12 @@ T = {
     "find_label":         {"no": "Finn:",                  "en": "Find:"},
     "replace_label":      {"no": "Erstatt med:",           "en": "Replace with:"},
     "find_btn":           {"no": "Erstatt",                "en": "Replace"},
+    "find_matches":       {"no": "Treff: {n}",             "en": "Matches: {n}"},
+    "warn_sync_title":    {"no": "Mulig sync-konflikt",    "en": "Possible sync conflict"},
+    "warn_sync_msg":      {"no": "Lagringen ser ut til å ha blitt overskrevet etter oppdatering.\n"
+                                   "Prøv å lagre igjen, og vent noen sekunder før omstart/synk.",
+                           "en": "The save appears to have been overwritten after update.\n"
+                                   "Try saving again, and wait a few seconds before reboot/sync."},
 }
 
 def t(key, **kwargs):
@@ -84,6 +97,9 @@ def _darken(hex_color):
     r, g, b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
     return f"#{max(0,r-30):02x}{max(0,g-30):02x}{max(0,b-30):02x}"
 
+def _normalize_shortcut(value):
+    return (value or "").strip().lower()
+
 # ── Config ─────────────────────────────────────────────────────────────────────
 DB_PATH  = os.path.expanduser("~/Library/KeyboardServices/TextReplacements.db")
 CD_EPOCH = 978307200
@@ -95,7 +111,14 @@ def backup():
     shutil.copy2(DB_PATH, DB_PATH + f".backup_{ts}")
 
 def get_conn():
-    return sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=10)
+    con.execute("PRAGMA busy_timeout = 10000")
+    return con
+
+def _next_timestamp(con):
+    now = time.time() - CD_EPOCH
+    max_ts = con.execute("SELECT MAX(ZTIMESTAMP) FROM ZTEXTREPLACEMENTENTRY").fetchone()[0] or 0
+    return max(now, max_ts + 0.001)
 
 def wal_checkpoint():
     """Force WAL content into main database file so keyboardservicesd sees updates."""
@@ -114,10 +137,22 @@ def read_items():
     con.close()
     return [{"pk": r[0], "shortcut": r[1] or "", "phrase": r[2] or ""} for r in rows]
 
+def read_item_by_pk(pk):
+    con = get_conn()
+    row = con.execute("""
+        SELECT Z_PK, ZSHORTCUT, ZPHRASE
+        FROM ZTEXTREPLACEMENTENTRY
+        WHERE Z_PK = ? AND ZWASDELETED = 0
+    """, (pk,)).fetchone()
+    con.close()
+    if not row:
+        return None
+    return {"pk": row[0], "shortcut": row[1] or "", "phrase": row[2] or ""}
+
 def insert_item(shortcut, phrase):
     con = get_conn()
     pk  = (con.execute("SELECT MAX(Z_PK) FROM ZTEXTREPLACEMENTENTRY").fetchone()[0] or 0) + 1
-    now = time.time() - CD_EPOCH
+    now = _next_timestamp(con)
     con.execute("""
         INSERT INTO ZTEXTREPLACEMENTENTRY
           (Z_PK, Z_ENT, Z_OPT, ZNEEDSSAVETOCLOUD, ZWASDELETED,
@@ -131,11 +166,12 @@ def insert_item(shortcut, phrase):
 
 def update_item(pk, shortcut, phrase):
     con = get_conn()
+    now = _next_timestamp(con)
     con.execute("""
         UPDATE ZTEXTREPLACEMENTENTRY
-        SET ZSHORTCUT=?, ZPHRASE=?, ZTIMESTAMP=?, ZNEEDSSAVETOCLOUD=1
+        SET ZSHORTCUT=?, ZPHRASE=?, ZTIMESTAMP=?, ZNEEDSSAVETOCLOUD=1, Z_OPT=Z_OPT+1
         WHERE Z_PK=?
-    """, (shortcut, phrase, time.time() - CD_EPOCH, pk))
+    """, (shortcut, phrase, now, pk))
     con.commit()
     con.close()
     wal_checkpoint()
@@ -149,8 +185,7 @@ def delete_item(pk):
 
 def stop_keyboard_daemon():
     try:
-        pid = subprocess.check_output(["pgrep", "keyboardservicesd"]).decode().strip()
-        subprocess.run(["kill", pid])
+        subprocess.run(["pkill", "-x", "keyboardservicesd"], check=False)
         for _ in range(20):
             time.sleep(0.25)
             if subprocess.run(["pgrep", "keyboardservicesd"],
@@ -355,7 +390,24 @@ class App(tk.Tk):
         self.token_list.configure(yscrollcommand=tsb.set)
         self.token_list.pack(side="left", fill="both", expand=True)
         tsb.pack(side="right", fill="y")
-        self.token_list.bind("<Double-1>", self._on_token_click)
+        self.token_list.bind("<<ListboxSelect>>", self._on_token_select)
+
+        self.selected_token_var = tk.StringVar(value=t("repeated_none"))
+        tk.Label(right, text=t("repeated_selected"), bg="#f5f5f7", fg="#636366",
+             font=("SF Pro Text", 10)).pack(anchor="w", pady=(8, 2))
+        tk.Label(right, textvariable=self.selected_token_var, bg="#f5f5f7", fg="#1d1d1f",
+             font=("SF Pro Text", 11, "bold"), wraplength=200, justify="left").pack(anchor="w")
+
+        tk.Label(right, text=t("repeated_new_value"), bg="#f5f5f7", fg="#636366",
+             font=("SF Pro Text", 10)).pack(anchor="w", pady=(8, 2))
+        self.token_new_var = tk.StringVar()
+        token_entry = tk.Entry(right, textvariable=self.token_new_var,
+                       font=("SF Pro Text", 11), relief="solid", bd=1)
+        token_entry.pack(fill="x")
+        token_entry.bind("<Return>", lambda _: self._apply_selected_token_replace())
+
+        self._make_button(right, t("repeated_apply"), self._apply_selected_token_replace,
+                  "#0051a8", "white").pack(fill="x", pady=(8, 0))
         tk.Button(right, text=t("btn_update_list"), command=self._refresh_tokens,
                   bg="#e5e5ea", fg="#1d1d1f", relief="flat",
                   font=("SF Pro Text", 11), pady=4).pack(fill="x", pady=(8,0))
@@ -398,9 +450,29 @@ class App(tk.Tk):
         self._tokens = find_repeated_tokens(self.items)
         for tok, cnt in self._tokens:
             self.token_list.insert("end", f"{tok}  ({cnt})")
+        self.selected_token_var.set(t("repeated_none"))
+        self.token_new_var.set("")
 
     def _status(self, msg):
         self.status_var.set(msg)
+
+    def _verify_saved_rows(self, expected_rows, retries=5, delay=0.6):
+        """Best-effort check for iCloud/daemon overwrite shortly after save."""
+        for _ in range(retries):
+            all_ok = True
+            for exp in expected_rows:
+                current = read_item_by_pk(exp["pk"])
+                if not current:
+                    all_ok = False
+                    break
+                if current["shortcut"] != exp["shortcut"] or current["phrase"] != exp["phrase"]:
+                    all_ok = False
+                    break
+            if all_ok:
+                return True
+            time.sleep(delay)
+        messagebox.showwarning(t("warn_sync_title"), t("warn_sync_msg"))
+        return False
 
     def _selected_item(self):
         sel = self.tree.selection()
@@ -409,22 +481,38 @@ class App(tk.Tk):
         pk = int(sel[0])
         return next((i for i in self.items if i["pk"] == pk), None)
 
-    def _on_token_click(self, event=None):
+    def _on_token_select(self, event=None):
         idx = self.token_list.curselection()
         if not idx:
             return
-        token, count = self._tokens[idx[0]]
-        dlg = BatchReplaceDialog(self, token, count)
-        if not dlg.result:
+        token, _count = self._tokens[idx[0]]
+        self.selected_token_var.set(token)
+        self.token_new_var.set(token)
+
+    def _apply_selected_token_replace(self):
+        idx = self.token_list.curselection()
+        if not idx:
+            messagebox.showinfo(t("select_expression_t"), t("select_expression"))
             return
-        new_val  = dlg.result
+
+        token, _count = self._tokens[idx[0]]
+        new_val = self.token_new_var.get().strip()
+        if not new_val:
+            messagebox.showwarning(t("dlg_missing_val_t"), t("dlg_missing_val"))
+            return
+        if new_val == token:
+            return
+
         affected = [i for i in self.items if token in i.get("phrase", "")]
         backup()
         stop_keyboard_daemon()
+        expected = []
         for item in affected:
             new_phrase = item["phrase"].replace(token, new_val)
             update_item(item["pk"], item["shortcut"], new_phrase)
             item["phrase"] = new_phrase
+            expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
+        self._verify_saved_rows(expected)
         self._refresh_table()
         self._refresh_tokens()
         self._status(t("status_replaced", a=token, b=new_val, n=len(affected)))
@@ -434,7 +522,7 @@ class App(tk.Tk):
         if not dlg.result:
             return
         sc, ph = dlg.result
-        if any(i["shortcut"] == sc for i in self.items):
+        if any(_normalize_shortcut(i["shortcut"]) == _normalize_shortcut(sc) for i in self.items):
             messagebox.showerror(t("err_exists_title"), t("err_exists", s=sc))
             return
         backup()
@@ -452,9 +540,20 @@ class App(tk.Tk):
                          shortcut=item["shortcut"], phrase=item["phrase"])
         if not dlg.result:
             return
+        new_shortcut = dlg.result[0]
+        if any(
+            i["pk"] != item["pk"] and
+            _normalize_shortcut(i["shortcut"]) == _normalize_shortcut(new_shortcut)
+            for i in self.items
+        ):
+            messagebox.showerror(t("err_exists_title"), t("err_exists", s=new_shortcut))
+            return
         backup()
         stop_keyboard_daemon()
-        update_item(item["pk"], dlg.result[0], dlg.result[1])
+        update_item(item["pk"], new_shortcut, dlg.result[1])
+        self._verify_saved_rows([
+            {"pk": item["pk"], "shortcut": new_shortcut, "phrase": dlg.result[1]}
+        ])
         self._load()
         self._status(t("status_edited", s=item["shortcut"]))
 
@@ -485,6 +584,24 @@ class App(tk.Tk):
             tk.Entry(win, textvariable=var, width=40,
                      font=("SF Pro Text", 12)).grid(row=row, column=1, sticky="ew", **pad)
 
+        original_query = self.search_var.get()
+        matches_var = tk.StringVar(value=t("find_matches", n=0))
+        tk.Label(win, textvariable=matches_var, bg="white", fg="#636366",
+                 font=("SF Pro Text", 11)).grid(row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 6))
+
+        def update_preview(*_):
+            f = fv.get()
+            if f:
+                self.search_var.set(f)
+                f_lower = f.lower()
+                n = sum(1 for i in self.items if f_lower in i.get("phrase", "").lower())
+            else:
+                self.search_var.set(original_query)
+                n = 0
+            matches_var.set(t("find_matches", n=n))
+
+        fv.trace_add("write", update_preview)
+
         def do_replace():
             f, r = fv.get(), rv.get()
             if not f:
@@ -495,16 +612,27 @@ class App(tk.Tk):
                 return
             backup()
             stop_keyboard_daemon()
+            expected = []
             for item in affected:
-                update_item(item["pk"], item["shortcut"], item["phrase"].replace(f, r))
+                new_phrase = item["phrase"].replace(f, r)
+                update_item(item["pk"], item["shortcut"], new_phrase)
+                expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
+            self._verify_saved_rows(expected)
             self._load()
             self._status(t("status_findreplace", n=len(affected)))
+            self.search_var.set(original_query)
             win.destroy()
 
+        def close_dialog():
+            self.search_var.set(original_query)
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", close_dialog)
+
         bf = tk.Frame(win, bg="white")
-        bf.grid(row=2, column=0, columnspan=2, pady=10)
+        bf.grid(row=3, column=0, columnspan=2, pady=10)
         self._make_button(bf, t("find_btn"),    do_replace,  "#0051a8", "white").pack(side="left", padx=6)
-        self._make_button(bf, t("dlg_cancel"),  win.destroy, "#3a3a3a", "white").pack(side="left", padx=6)
+        self._make_button(bf, t("dlg_cancel"),  close_dialog, "#3a3a3a", "white").pack(side="left", padx=6)
 
 # ── Start ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
