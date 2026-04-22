@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-TxtManager 1.1.1 for macOS 15+/26
+TxtManager 1.2.0 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
 - Bilingual: Norwegian / English (follows macOS language setting)
 """
 
-import sqlite3, time, uuid, subprocess, os, re, shutil, locale
+import sqlite3, time, uuid, subprocess, os, re, shutil, locale, threading
 from collections import Counter
 from datetime import datetime
 import tkinter as tk
@@ -15,8 +15,19 @@ from tkinter import ttk, messagebox
 
 # ── Language detection ─────────────────────────────────────────────────────────
 def _detect_lang():
+    # 1. Check standard env vars
     lang = os.environ.get("LANG", "") or os.environ.get("LANGUAGE", "") or locale.getlocale()[0] or ""
-    return "no" if any(lang.startswith(x) for x in ("nb", "nn", "no")) else "en"
+    if any(lang.startswith(x) for x in ("nb", "nn", "no")):
+        return "no"
+    # 2. On macOS, check AppleLanguages (the actual system language setting)
+    try:
+        r = subprocess.run(["defaults", "read", "NSGlobalDomain", "AppleLanguages"],
+                           capture_output=True, text=True, timeout=2)
+        if r.returncode == 0 and any(x in r.stdout for x in ("nb", "nn", "no")):
+            return "no"
+    except Exception:
+        pass
+    return "en"
 
 LANG = _detect_lang()
 
@@ -85,6 +96,16 @@ T = {
                                    "Prøv å lagre igjen, og vent noen sekunder før omstart/synk.",
                            "en": "The save appears to have been overwritten after update.\n"
                                    "Try saving again, and wait a few seconds before reboot/sync."},
+    "btn_version_bump":   {"no": "🔢 Versjonsoppdatering", "en": "🔢 Version Bump"},
+    "vb_title":           {"no": "Versjonsoppdatering",    "en": "Version Bump"},
+    "vb_current":         {"no": "Nåværende versjon:",     "en": "Current version:"},
+    "vb_new":             {"no": "Ny versjon:",            "en": "New version:"},
+    "vb_affected":        {"no": "Berørte snarveier ({n}):", "en": "Affected shortcuts ({n}):"},
+    "vb_apply":           {"no": "Oppdater alle",          "en": "Update all"},
+    "vb_no_versions":     {"no": "Fant ingen versjonsnumre i snarveiene.", "en": "No version numbers found in shortcuts."},
+    "vb_no_versions_t":   {"no": "Ingen versjoner",       "en": "No versions"},
+    "vb_done":            {"no": "✓ Oppdaterte versjon «{a}» → «{b}» i {n} snarveier.",
+                           "en": "✓ Updated version «{a}» → «{b}» in {n} shortcuts."},
 }
 
 def t(key, **kwargs):
@@ -184,13 +205,60 @@ def delete_item(pk):
     wal_checkpoint()
 
 def stop_keyboard_daemon():
+    """Restart keyboardservicesd and sync NSUserDictionaryReplacementItems.
+    Called AFTER writes + wal_checkpoint to ensure system picks up changes.
+    All work is done in the helper script (system Python) for reliability."""
+    _sync_defaults_cache()
+
+def _sync_defaults_cache():
+    """Update NSUserDictionaryReplacementItems in NSGlobalDomain.
+    Writes a helper .py file and runs it with the SYSTEM Python (not bundled)
+    to avoid bus error in py2app. Restarts TextInputMenuAgent after."""
     try:
-        subprocess.run(["pkill", "-x", "keyboardservicesd"], check=False)
-        for _ in range(20):
-            time.sleep(0.25)
-            if subprocess.run(["pgrep", "keyboardservicesd"],
-                              capture_output=True).returncode != 0:
-                break
+        items = read_items()
+        import json, tempfile
+        # Write items to a temp file for the helper to read
+        payload = [{"replace": i["shortcut"], "with": i["phrase"]} for i in items]
+        data_path = os.path.join(tempfile.gettempdir(), "txtmanager_sync.json")
+        script_path = os.path.join(tempfile.gettempdir(), "txtmanager_sync.py")
+        with open(data_path, "w") as f:
+            json.dump(payload, f)
+        # Helper script runs with system Python (PyObjC bus-errors inside py2app)
+        with open(script_path, "w") as f:
+            f.write("""
+import json, subprocess, os, sys, time
+data_path = sys.argv[1]
+with open(data_path) as f:
+    items = json.load(f)
+entries = [{"on": True, "replace": i["replace"], "with": i["with"]} for i in items]
+# 1. Restart keyboardservicesd so it re-reads the DB
+uid = os.getuid()
+subprocess.run(["launchctl", "kickstart", "-k", "gui/" + str(uid) + "/com.apple.keyboardservicesd"],
+               capture_output=True, timeout=5)
+time.sleep(1.0)
+# 2. Sync NSUserDictionaryReplacementItems plist
+from Foundation import NSUserDefaults, NSDistributedNotificationCenter
+ud = NSUserDefaults.standardUserDefaults()
+gd = dict(ud.persistentDomainForName_("NSGlobalDomain") or {})
+gd["NSUserDictionaryReplacementItems"] = entries
+ud.setPersistentDomain_forName_(gd, "NSGlobalDomain")
+ud.synchronize()
+# 3. Notify and restart text input agents
+center = NSDistributedNotificationCenter.defaultCenter()
+center.postNotificationName_object_userInfo_deliverImmediately_(
+    "com.apple.textInput.keyboardServices.textReplacement", None, None, True)
+time.sleep(0.5)
+subprocess.run(["killall", "TextInputMenuAgent"], check=False)
+subprocess.run(["killall", "TextInputServer"], check=False)
+os.unlink(data_path)
+""")
+        # Run synchronously with system Python — clean env to avoid py2app interference
+        clean_env = {k: v for k, v in os.environ.items()
+                     if "PYTHON" not in k and k != "RESOURCEPATH"}
+        subprocess.run(
+            ["/usr/bin/python3", script_path, data_path],
+            timeout=15, env=clean_env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
@@ -218,29 +286,48 @@ class EditDialog(tk.Toplevel):
         super().__init__(parent)
         self.title(title or t("dlg_new_title"))
         self.resizable(False, False)
-        self.configure(bg="white")
+        self.configure(bg=COLORS["bg"])
+        self.transient(parent)
         self.result = None
         self._build(shortcut, phrase)
+        self._center(parent)
         self.grab_set()
         self.wait_window()
 
+    def _center(self, parent):
+        self.update_idletasks()
+        dw, dh = self.winfo_width(), self.winfo_height()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        self.geometry(f"+{px + (pw - dw) // 2}+{py + (ph - dh) // 2}")
+
     def _build(self, sc, ph):
-        pad = {"padx": 16, "pady": 6}
-        tk.Label(self, text=t("dlg_shortcut"), bg="white",
-                 font=("SF Pro Text", 12)).grid(row=0, column=0, sticky="w", **pad)
+        pad = {"padx": 20, "pady": 8}
+        tk.Label(self, text=t("dlg_shortcut"), bg=COLORS["bg"], fg=COLORS["text"],
+                 font=FONT).grid(row=0, column=0, sticky="w", **pad)
         self.sc_var = tk.StringVar(value=sc)
-        tk.Entry(self, textvariable=self.sc_var, width=30,
-                 font=("SF Pro Text", 12)).grid(row=0, column=1, sticky="ew", **pad)
-        tk.Label(self, text=t("dlg_phrase"), bg="white",
-                 font=("SF Pro Text", 12)).grid(row=1, column=0, sticky="nw", **pad)
-        self.ph_text = tk.Text(self, width=52, height=5,
-                               font=("SF Pro Text", 12), wrap="word", relief="solid", bd=1)
+        sc_frame = tk.Frame(self, bg=COLORS["card"], highlightbackground=COLORS["card_border"],
+                            highlightthickness=1, bd=0)
+        sc_frame.grid(row=0, column=1, sticky="ew", **pad)
+        tk.Entry(sc_frame, textvariable=self.sc_var, width=30,
+                 font=FONT, relief="flat", bd=0, bg=COLORS["card"],
+                 insertbackground=COLORS["text"]).pack(padx=8, pady=6)
+
+        tk.Label(self, text=t("dlg_phrase"), bg=COLORS["bg"], fg=COLORS["text"],
+                 font=FONT).grid(row=1, column=0, sticky="nw", **pad)
+        ph_frame = tk.Frame(self, bg=COLORS["card"], highlightbackground=COLORS["card_border"],
+                            highlightthickness=1, bd=0)
+        ph_frame.grid(row=1, column=1, sticky="ew", **pad)
+        self.ph_text = tk.Text(ph_frame, width=52, height=5,
+                               font=FONT, wrap="word", relief="flat", bd=0,
+                               bg=COLORS["card"], insertbackground=COLORS["text"])
         self.ph_text.insert("1.0", ph)
-        self.ph_text.grid(row=1, column=1, sticky="ew", **pad)
-        bf = tk.Frame(self, bg="white")
-        bf.grid(row=2, column=0, columnspan=2, pady=10)
-        App._make_button(self, bf, t("dlg_save"),   self._ok,      "#1a7a35", "white").pack(side="left", padx=6)
-        App._make_button(self, bf, t("dlg_cancel"), self.destroy,  "#3a3a3a", "white").pack(side="left", padx=6)
+        self.ph_text.pack(padx=8, pady=6)
+
+        bf = tk.Frame(self, bg=COLORS["bg"])
+        bf.grid(row=2, column=0, columnspan=2, pady=16)
+        App._make_button(bf, t("dlg_save"),   self._ok,      COLORS["accent"], "white").pack(side="left", padx=6)
+        App._make_button(bf, t("dlg_cancel"), self.destroy,  COLORS["secondary"], "white").pack(side="left", padx=6)
 
     def _ok(self):
         sc = self.sc_var.get().strip()
@@ -257,30 +344,43 @@ class BatchReplaceDialog(tk.Toplevel):
         super().__init__(parent)
         self.title(t("batch_title"))
         self.resizable(False, False)
-        self.configure(bg="white")
+        self.configure(bg=COLORS["bg"])
+        self.transient(parent)
         self.result = None
         self._build(token, count)
+        self._center(parent)
         self.grab_set()
         self.wait_window()
 
+    def _center(self, parent):
+        self.update_idletasks()
+        dw, dh = self.winfo_width(), self.winfo_height()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        self.geometry(f"+{px + (pw - dw) // 2}+{py + (ph - dh) // 2}")
+
     def _build(self, token, count):
-        pad = {"padx": 16, "pady": 8}
-        tk.Label(self, text=t("batch_replace", n=count), bg="white",
-                 font=("SF Pro Text", 12)).grid(row=0, column=0, sticky="w", **pad)
-        tk.Label(self, text=token, bg="#f0f0f0",
-                 font=("SF Pro Text", 12, "bold"), padx=8, pady=4
+        pad = {"padx": 20, "pady": 8}
+        tk.Label(self, text=t("batch_replace", n=count), bg=COLORS["bg"], fg=COLORS["text"],
+                 font=FONT).grid(row=0, column=0, sticky="w", **pad)
+        tk.Label(self, text=token, bg=COLORS["card"], fg=COLORS["text"],
+                 font=FONT_BOLD, padx=10, pady=4
                  ).grid(row=0, column=1, sticky="w", **pad)
-        tk.Label(self, text=t("batch_with"), bg="white",
-                 font=("SF Pro Text", 12)).grid(row=1, column=0, sticky="w", **pad)
+        tk.Label(self, text=t("batch_with"), bg=COLORS["bg"], fg=COLORS["text"],
+                 font=FONT).grid(row=1, column=0, sticky="w", **pad)
         self.new_var = tk.StringVar()
-        e = tk.Entry(self, textvariable=self.new_var, width=38, font=("SF Pro Text", 12))
-        e.grid(row=1, column=1, sticky="ew", **pad)
+        e_frame = tk.Frame(self, bg=COLORS["card"], highlightbackground=COLORS["card_border"],
+                           highlightthickness=1, bd=0)
+        e_frame.grid(row=1, column=1, sticky="ew", **pad)
+        e = tk.Entry(e_frame, textvariable=self.new_var, width=38, font=FONT,
+                     relief="flat", bd=0, bg=COLORS["card"], insertbackground=COLORS["text"])
+        e.pack(padx=8, pady=6)
         e.focus_set()
         self.bind("<Return>", lambda _: self._ok())
-        bf = tk.Frame(self, bg="white")
-        bf.grid(row=2, column=0, columnspan=2, pady=10)
-        App._make_button(self, bf, t("batch_btn"),  self._ok,     "#0051a8", "white").pack(side="left", padx=6)
-        App._make_button(self, bf, t("dlg_cancel"), self.destroy, "#3a3a3a", "white").pack(side="left", padx=6)
+        bf = tk.Frame(self, bg=COLORS["bg"])
+        bf.grid(row=2, column=0, columnspan=2, pady=16)
+        App._make_button(bf, t("batch_btn"),  self._ok,     COLORS["accent"], "white").pack(side="left", padx=6)
+        App._make_button(bf, t("dlg_cancel"), self.destroy, COLORS["secondary"], "white").pack(side="left", padx=6)
 
     def _ok(self):
         new = self.new_var.get().strip()
@@ -290,71 +390,147 @@ class BatchReplaceDialog(tk.Toplevel):
         self.result = new
         self.destroy()
 
+# ── Modern Apple-style colors ──────────────────────────────────────────────────
+COLORS = {
+    "bg":           "#f5f5f7",
+    "card":         "#ffffff",
+    "card_border":  "#d1d1d6",
+    "accent":       "#007aff",
+    "accent_hover": "#0066d6",
+    "destructive":  "#ff3b30",
+    "destr_hover":  "#d62d24",
+    "secondary":    "#8e8e93",
+    "sec_hover":    "#636366",
+    "text":         "#1d1d1f",
+    "text_sec":     "#86868b",
+    "separator":    "#d1d1d6",
+    "selected":     "#007aff",
+    "status_bg":    "#f2f2f7",
+}
+
+FONT       = ("SF Pro Text", 13)
+FONT_SMALL = ("SF Pro Text", 11)
+FONT_BOLD  = ("SF Pro Text", 13, "bold")
+FONT_TITLE = ("SF Pro Display", 20, "bold")
+
 # ── Main window ────────────────────────────────────────────────────────────────
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+        # Hide window during construction to avoid Cocoa layout crash
+        # under py2app's NSTask bootstrap runloop
+        self.withdraw()
         self.title(t("title"))
-        self.geometry("1050x660")
-        self.resizable(True, True)
-        self.configure(bg="#f5f5f7")
+        self.configure(bg=COLORS["bg"])
         self.items = []
         self._build_ui()
-        self._load()
+        # Defer geometry + show + load until mainloop is running
+        self.after(0, self._initialize_window)
 
-    def _make_button(self, parent, text, command, bg, fg):
-        c = tk.Canvas(parent, bg=bg, highlightthickness=0, cursor="hand2", height=32)
-        def _draw(event=None):
-            c.delete("all")
-            w, h = c.winfo_width() or 120, c.winfo_height() or 32
-            c.create_rectangle(0, 0, w, h, fill=bg, outline="")
-            c.create_text(w//2, h//2, text=text, fill=fg, font=("SF Pro Text", 12))
-        c.bind("<Configure>", _draw)
-        c.bind("<Button-1>", lambda e: command())
-        c.bind("<Enter>", lambda e: c.config(bg=_darken(bg)))
-        c.bind("<Leave>", lambda e: c.config(bg=bg))
-        c.config(width=len(text) * 9 + 24, height=32)
-        return c
+    def _initialize_window(self):
+        self.geometry("1100x720")
+        self.minsize(900, 500)
+        self.resizable(True, True)
+        self.deiconify()
+        self.after(50, self._load)
+
+    @staticmethod
+    def _center_dialog(dialog, parent):
+        """Center a Toplevel dialog over its parent window."""
+        dialog.update_idletasks()
+        dw, dh = dialog.winfo_width(), dialog.winfo_height()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        x = px + (pw - dw) // 2
+        y = py + (ph - dh) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+    @staticmethod
+    def _make_button(container, text, command, bg, fg, width=None):
+        """Create a modern rounded button using a Frame+Label approach."""
+        btn_frame = tk.Frame(container, bg=bg, padx=14, pady=6, cursor="pointinghand",
+                             highlightthickness=0, bd=0)
+        lbl = tk.Label(btn_frame, text=text, bg=bg, fg=fg, font=FONT_SMALL,
+                       cursor="pointinghand")
+        lbl.pack()
+
+        hover_bg = _darken(bg)
+        def on_enter(e):
+            btn_frame.config(bg=hover_bg)
+            lbl.config(bg=hover_bg)
+        def on_leave(e):
+            btn_frame.config(bg=bg)
+            lbl.config(bg=bg)
+        def on_click(e):
+            command()
+
+        for widget in (btn_frame, lbl):
+            widget.bind("<Enter>", on_enter)
+            widget.bind("<Leave>", on_leave)
+            widget.bind("<Button-1>", on_click)
+
+        if width:
+            btn_frame.config(width=width)
+        return btn_frame
 
     def _build_ui(self):
         style = ttk.Style(self)
-        style.theme_use("clam")
+        style.theme_use("aqua" if "aqua" in style.theme_names() else "clam")
+
+        # Treeview styling
         style.configure("Treeview",
-            background="white", foreground="#1d1d1f",
-            fieldbackground="white", rowheight=26, font=("SF Pro Text", 13))
+            background="white", foreground=COLORS["text"],
+            fieldbackground="white", rowheight=32, font=FONT,
+            borderwidth=0, relief="flat")
         style.configure("Treeview.Heading",
-            background="#e5e5ea", foreground="#1d1d1f", font=("SF Pro Text", 12, "bold"))
+            background=COLORS["bg"], foreground=COLORS["text"],
+            font=FONT_BOLD, relief="flat", borderwidth=0)
         style.map("Treeview",
-            background=[("selected", "#0071e3")],
+            background=[("selected", COLORS["selected"])],
             foreground=[("selected", "white")])
+        style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
 
-        tk.Label(self, text="🔤 " + t("title"), bg="#f5f5f7", fg="#1d1d1f",
-                 font=("SF Pro Text", 17, "bold")).pack(anchor="w", padx=16, pady=(14, 6))
+        # Title
+        title_frame = tk.Frame(self, bg=COLORS["bg"])
+        title_frame.pack(fill="x", padx=24, pady=(20, 4))
+        tk.Label(title_frame, text=t("title"), bg=COLORS["bg"], fg=COLORS["text"],
+                 font=FONT_TITLE).pack(side="left")
 
-        main = tk.Frame(self, bg="#f5f5f7")
-        main.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        # Main content area
+        main = tk.Frame(self, bg=COLORS["bg"])
+        main.pack(fill="both", expand=True, padx=24, pady=(8, 16))
 
-        # Left panel
-        left = tk.Frame(main, bg="#f5f5f7")
+        # ── Left panel ──
+        left = tk.Frame(main, bg=COLORS["bg"])
         left.pack(side="left", fill="both", expand=True)
 
-        sf = tk.Frame(left, bg="#f5f5f7")
-        sf.pack(fill="x", pady=(0, 6))
-        tk.Label(sf, text="🔍", bg="#f5f5f7", font=("SF Pro Text", 14)).pack(side="left", padx=(0,4))
+        # Search bar — modern rounded style
+        sf = tk.Frame(left, bg=COLORS["card"], highlightbackground=COLORS["card_border"],
+                      highlightthickness=1, bd=0)
+        sf.pack(fill="x", pady=(0, 12))
+        tk.Label(sf, text="🔍", bg=COLORS["card"], font=FONT).pack(side="left", padx=(12, 4), pady=8)
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self._refresh_table())
-        tk.Entry(sf, textvariable=self.search_var, width=38,
-                 font=("SF Pro Text", 13), relief="solid", bd=1).pack(side="left")
-        tk.Button(sf, text="✕", command=lambda: self.search_var.set(""),
-                  bg="#f5f5f7", relief="flat", font=("SF Pro Text", 12)).pack(side="left", padx=4)
+        search_entry = tk.Entry(sf, textvariable=self.search_var, width=38,
+                 font=FONT, relief="flat", bd=0, bg=COLORS["card"],
+                 insertbackground=COLORS["text"])
+        search_entry.pack(side="left", fill="x", expand=True, padx=4, pady=8)
+        clear_btn = tk.Label(sf, text="✕", bg=COLORS["card"], fg=COLORS["text_sec"],
+                             font=FONT_SMALL, cursor="pointinghand")
+        clear_btn.pack(side="right", padx=(4, 12), pady=8)
+        clear_btn.bind("<Button-1>", lambda e: self.search_var.set(""))
 
-        tframe = tk.Frame(left, bg="#f5f5f7")
-        tframe.pack(fill="both", expand=True)
+        # Treeview in a card-like container
+        tcard = tk.Frame(left, bg=COLORS["card"], highlightbackground=COLORS["card_border"],
+                         highlightthickness=1, bd=0)
+        tcard.pack(fill="both", expand=True)
+        tframe = tk.Frame(tcard, bg=COLORS["card"])
+        tframe.pack(fill="both", expand=True, padx=1, pady=1)
         self.tree = ttk.Treeview(tframe, columns=("shortcut", "phrase"),
                                   show="headings", selectmode="browse")
         self.tree.heading("shortcut", text=t("col_shortcut"), command=lambda: self._sort("shortcut"))
         self.tree.heading("phrase",   text=t("col_phrase"),   command=lambda: self._sort("phrase"))
-        self.tree.column("shortcut", width=170, minwidth=80, stretch=False)
+        self.tree.column("shortcut", width=180, minwidth=80, stretch=False)
         self.tree.column("phrase",   width=500, minwidth=200, stretch=True)
         sb = ttk.Scrollbar(tframe, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
@@ -362,30 +538,38 @@ class App(tk.Tk):
         sb.pack(side="right", fill="y")
         self.tree.bind("<Double-1>", lambda e: self._edit_selected())
 
-        bf = tk.Frame(left, bg="#f5f5f7", pady=8)
+        # Button bar
+        bf = tk.Frame(left, bg=COLORS["bg"], pady=12)
         bf.pack(fill="x")
-        for label, cmd, bg, fg in [
-            (t("btn_new"),         self._add,             "#0051a8", "white"),
-            (t("btn_edit"),        self._edit_selected,   "#0051a8", "white"),
-            (t("btn_delete"),      self._delete_selected, "#c0001e", "white"),
-            (t("btn_findreplace"), self._find_replace,    "#3a3a3a", "white"),
+        for label, cmd, bg_c, fg_c in [
+            (t("btn_new"),          self._add,             COLORS["accent"],      "white"),
+            (t("btn_edit"),         self._edit_selected,   COLORS["accent"],      "white"),
+            (t("btn_delete"),       self._delete_selected, COLORS["destructive"], "white"),
+            (t("btn_findreplace"),  self._find_replace,    COLORS["secondary"],   "white"),
+            (t("btn_version_bump"), self._version_bump,    COLORS["secondary"],   "white"),
         ]:
-            self._make_button(bf, label, cmd, bg, fg).pack(side="left", padx=(0,8))
-        self._make_button(bf, t("btn_reload"), self._load, "#888888", "white").pack(side="right")
+            self._make_button(bf, label, cmd, bg_c, fg_c).pack(side="left", padx=(0, 8))
+        self._make_button(bf, t("btn_reload"), self._load, COLORS["secondary"], "white").pack(side="right")
 
-        # Right panel
-        right = tk.Frame(main, bg="#f5f5f7", width=220)
-        right.pack(side="right", fill="y", padx=(14, 0))
+        # ── Right panel (repeated tokens) ──
+        right = tk.Frame(main, bg=COLORS["bg"], width=240)
+        right.pack(side="right", fill="y", padx=(20, 0))
         right.pack_propagate(False)
-        tk.Label(right, text=t("repeated_title"), bg="#f5f5f7", fg="#1d1d1f",
-                 font=("SF Pro Text", 12, "bold")).pack(anchor="w", pady=(0,2))
-        tk.Label(right, text=t("repeated_hint"), bg="#f5f5f7", fg="#636366",
-                 font=("SF Pro Text", 10), wraplength=200).pack(anchor="w", pady=(0,8))
-        lf = tk.Frame(right, bg="#f5f5f7")
-        lf.pack(fill="both", expand=True)
-        self.token_list = tk.Listbox(lf, font=("SF Pro Text", 12), relief="solid", bd=1,
-                                     selectbackground="#0071e3", selectforeground="white",
-                                     activestyle="none")
+
+        tk.Label(right, text=t("repeated_title"), bg=COLORS["bg"], fg=COLORS["text"],
+                 font=FONT_BOLD).pack(anchor="w", pady=(0, 4))
+        tk.Label(right, text=t("repeated_hint"), bg=COLORS["bg"], fg=COLORS["text_sec"],
+                 font=FONT_SMALL, wraplength=220).pack(anchor="w", pady=(0, 12))
+
+        lf_card = tk.Frame(right, bg=COLORS["card"], highlightbackground=COLORS["card_border"],
+                           highlightthickness=1, bd=0)
+        lf_card.pack(fill="both", expand=True)
+        lf = tk.Frame(lf_card, bg=COLORS["card"])
+        lf.pack(fill="both", expand=True, padx=1, pady=1)
+        self.token_list = tk.Listbox(lf, font=FONT, relief="flat", bd=0,
+                                     bg=COLORS["card"],
+                                     selectbackground=COLORS["selected"], selectforeground="white",
+                                     activestyle="none", highlightthickness=0)
         tsb = ttk.Scrollbar(lf, orient="vertical", command=self.token_list.yview)
         self.token_list.configure(yscrollcommand=tsb.set)
         self.token_list.pack(side="left", fill="both", expand=True)
@@ -393,29 +577,35 @@ class App(tk.Tk):
         self.token_list.bind("<<ListboxSelect>>", self._on_token_select)
 
         self.selected_token_var = tk.StringVar(value=t("repeated_none"))
-        tk.Label(right, text=t("repeated_selected"), bg="#f5f5f7", fg="#636366",
-             font=("SF Pro Text", 10)).pack(anchor="w", pady=(8, 2))
-        tk.Label(right, textvariable=self.selected_token_var, bg="#f5f5f7", fg="#1d1d1f",
-             font=("SF Pro Text", 11, "bold"), wraplength=200, justify="left").pack(anchor="w")
+        tk.Label(right, text=t("repeated_selected"), bg=COLORS["bg"], fg=COLORS["text_sec"],
+                 font=FONT_SMALL).pack(anchor="w", pady=(12, 2))
+        tk.Label(right, textvariable=self.selected_token_var, bg=COLORS["bg"], fg=COLORS["text"],
+                 font=FONT_BOLD, wraplength=220, justify="left").pack(anchor="w")
 
-        tk.Label(right, text=t("repeated_new_value"), bg="#f5f5f7", fg="#636366",
-             font=("SF Pro Text", 10)).pack(anchor="w", pady=(8, 2))
+        tk.Label(right, text=t("repeated_new_value"), bg=COLORS["bg"], fg=COLORS["text_sec"],
+                 font=FONT_SMALL).pack(anchor="w", pady=(12, 2))
         self.token_new_var = tk.StringVar()
-        token_entry = tk.Entry(right, textvariable=self.token_new_var,
-                       font=("SF Pro Text", 11), relief="solid", bd=1)
-        token_entry.pack(fill="x")
+        token_entry_frame = tk.Frame(right, bg=COLORS["card"], highlightbackground=COLORS["card_border"],
+                                     highlightthickness=1, bd=0)
+        token_entry_frame.pack(fill="x")
+        token_entry = tk.Entry(token_entry_frame, textvariable=self.token_new_var,
+                       font=FONT, relief="flat", bd=0, bg=COLORS["card"],
+                       insertbackground=COLORS["text"])
+        token_entry.pack(fill="x", padx=8, pady=6)
         token_entry.bind("<Return>", lambda _: self._apply_selected_token_replace())
 
         self._make_button(right, t("repeated_apply"), self._apply_selected_token_replace,
-                  "#0051a8", "white").pack(fill="x", pady=(8, 0))
-        tk.Button(right, text=t("btn_update_list"), command=self._refresh_tokens,
-                  bg="#e5e5ea", fg="#1d1d1f", relief="flat",
-                  font=("SF Pro Text", 11), pady=4).pack(fill="x", pady=(8,0))
+                  COLORS["accent"], "white").pack(fill="x", pady=(12, 0))
+        self._make_button(right, t("btn_update_list"), self._refresh_tokens,
+                  COLORS["secondary"], "white").pack(fill="x", pady=(8, 0))
 
+        # Status bar
         self.status_var = tk.StringVar(value="")
-        tk.Label(self, textvariable=self.status_var, bg="#e5e5ea", fg="#636366",
-                 font=("SF Pro Text", 11), anchor="w", padx=12
-                 ).pack(fill="x", side="bottom", ipady=4)
+        status_frame = tk.Frame(self, bg=COLORS["status_bg"])
+        status_frame.pack(fill="x", side="bottom")
+        tk.Label(status_frame, textvariable=self.status_var, bg=COLORS["status_bg"],
+                 fg=COLORS["text_sec"], font=FONT_SMALL, anchor="w", padx=24
+                 ).pack(fill="x", ipady=6)
 
     def _sort(self, col):
         if not hasattr(self, "_sort_state"):
@@ -427,7 +617,6 @@ class App(tk.Tk):
 
     def _load(self):
         try:
-            stop_keyboard_daemon()
             self.items = read_items()
             self._refresh_table()
             self._refresh_tokens()
@@ -456,23 +645,24 @@ class App(tk.Tk):
     def _status(self, msg):
         self.status_var.set(msg)
 
-    def _verify_saved_rows(self, expected_rows, retries=5, delay=0.6):
-        """Best-effort check for iCloud/daemon overwrite shortly after save."""
-        for _ in range(retries):
-            all_ok = True
-            for exp in expected_rows:
-                current = read_item_by_pk(exp["pk"])
-                if not current:
-                    all_ok = False
-                    break
-                if current["shortcut"] != exp["shortcut"] or current["phrase"] != exp["phrase"]:
-                    all_ok = False
-                    break
-            if all_ok:
-                return True
-            time.sleep(delay)
-        messagebox.showwarning(t("warn_sync_title"), t("warn_sync_msg"))
-        return False
+    def _verify_saved_rows(self, expected_rows, retries=3, delay=0.3):
+        """Non-blocking verification in background thread."""
+        def _check():
+            for _ in range(retries):
+                time.sleep(delay)
+                all_ok = True
+                for exp in expected_rows:
+                    current = read_item_by_pk(exp["pk"])
+                    if not current:
+                        all_ok = False
+                        break
+                    if current["shortcut"] != exp["shortcut"] or current["phrase"] != exp["phrase"]:
+                        all_ok = False
+                        break
+                if all_ok:
+                    return
+            self.after(0, lambda: messagebox.showwarning(t("warn_sync_title"), t("warn_sync_msg")))
+        threading.Thread(target=_check, daemon=True).start()
 
     def _selected_item(self):
         sel = self.tree.selection()
@@ -505,13 +695,13 @@ class App(tk.Tk):
 
         affected = [i for i in self.items if token in i.get("phrase", "")]
         backup()
-        stop_keyboard_daemon()
         expected = []
         for item in affected:
             new_phrase = item["phrase"].replace(token, new_val)
             update_item(item["pk"], item["shortcut"], new_phrase)
             item["phrase"] = new_phrase
             expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
+        stop_keyboard_daemon()
         self._verify_saved_rows(expected)
         self._refresh_table()
         self._refresh_tokens()
@@ -526,8 +716,8 @@ class App(tk.Tk):
             messagebox.showerror(t("err_exists_title"), t("err_exists", s=sc))
             return
         backup()
-        stop_keyboard_daemon()
         insert_item(sc, ph)
+        stop_keyboard_daemon()
         self._load()
         self._status(t("status_added", s=sc))
 
@@ -549,8 +739,8 @@ class App(tk.Tk):
             messagebox.showerror(t("err_exists_title"), t("err_exists", s=new_shortcut))
             return
         backup()
-        stop_keyboard_daemon()
         update_item(item["pk"], new_shortcut, dlg.result[1])
+        stop_keyboard_daemon()
         self._verify_saved_rows([
             {"pk": item["pk"], "shortcut": new_shortcut, "phrase": dlg.result[1]}
         ])
@@ -565,29 +755,130 @@ class App(tk.Tk):
         if not messagebox.askyesno(t("confirm_title"), t("confirm_delete", s=item["shortcut"])):
             return
         backup()
-        stop_keyboard_daemon()
         delete_item(item["pk"])
+        stop_keyboard_daemon()
         self._load()
         self._status(t("status_deleted", s=item["shortcut"]))
+
+    def _version_bump(self):
+        """Detect version numbers in phrases and offer a quick bump UI."""
+        version_re = re.compile(r"\d+\.\d+(?:\.\d+)*")
+        version_counts = Counter()
+        for item in self.items:
+            for m in version_re.finditer(item.get("phrase", "")):
+                version_counts[m.group()] += 1
+        # Only show versions appearing in 2+ phrases
+        versions = [(v, c) for v, c in version_counts.most_common() if c >= 2]
+        if not versions:
+            messagebox.showinfo(t("vb_no_versions_t"), t("vb_no_versions"))
+            return
+
+        win = tk.Toplevel(self)
+        win.title(t("vb_title"))
+        win.configure(bg=COLORS["bg"])
+        win.resizable(False, False)
+        win.transient(self)
+
+        tk.Label(win, text=t("vb_title"), bg=COLORS["bg"], fg=COLORS["text"],
+                 font=FONT_BOLD).pack(anchor="w", padx=20, pady=(16, 8))
+
+        # Version list
+        list_frame = tk.Frame(win, bg=COLORS["card"], highlightbackground=COLORS["card_border"],
+                              highlightthickness=1, bd=0)
+        list_frame.pack(fill="both", padx=20, pady=(0, 8))
+        ver_list = tk.Listbox(list_frame, font=FONT, relief="flat", bd=0, bg=COLORS["card"],
+                              selectbackground=COLORS["selected"], selectforeground="white",
+                              activestyle="none", highlightthickness=0, height=min(8, len(versions)))
+        ver_list.pack(fill="both", padx=1, pady=1)
+        for v, c in versions:
+            ver_list.insert("end", f"{v}  ({c} snarveier)" if LANG == "no" else f"{v}  ({c} shortcuts)")
+
+        # New version entry
+        entry_frame = tk.Frame(win, bg=COLORS["bg"])
+        entry_frame.pack(fill="x", padx=20, pady=(4, 8))
+        tk.Label(entry_frame, text=t("vb_new"), bg=COLORS["bg"], fg=COLORS["text"],
+                 font=FONT).pack(side="left")
+        new_ver_var = tk.StringVar()
+        nv_frame = tk.Frame(entry_frame, bg=COLORS["card"], highlightbackground=COLORS["card_border"],
+                            highlightthickness=1, bd=0)
+        nv_frame.pack(side="left", padx=(8, 0), fill="x", expand=True)
+        new_entry = tk.Entry(nv_frame, textvariable=new_ver_var, font=FONT,
+                             relief="flat", bd=0, bg=COLORS["card"],
+                             insertbackground=COLORS["text"])
+        new_entry.pack(padx=8, pady=6, fill="x")
+
+        # Preview of affected shortcuts
+        preview_var = tk.StringVar(value="")
+        tk.Label(win, textvariable=preview_var, bg=COLORS["bg"], fg=COLORS["text_sec"],
+                 font=FONT_SMALL, wraplength=400, justify="left").pack(anchor="w", padx=20, pady=(0, 4))
+
+        def on_select(event=None):
+            idx = ver_list.curselection()
+            if not idx:
+                return
+            ver, cnt = versions[idx[0]]
+            new_ver_var.set(ver)
+            affected = [i["shortcut"] for i in self.items if ver in i.get("phrase", "")]
+            preview_var.set(t("vb_affected", n=cnt) + " " + ", ".join(affected[:10])
+                           + ("…" if len(affected) > 10 else ""))
+
+        ver_list.bind("<<ListboxSelect>>", on_select)
+
+        def do_bump():
+            idx = ver_list.curselection()
+            if not idx:
+                return
+            old_ver = versions[idx[0]][0]
+            new_ver = new_ver_var.get().strip()
+            if not new_ver or new_ver == old_ver:
+                return
+            affected = [i for i in self.items if old_ver in i.get("phrase", "")]
+            backup()
+            expected = []
+            for item in affected:
+                new_phrase = item["phrase"].replace(old_ver, new_ver)
+                update_item(item["pk"], item["shortcut"], new_phrase)
+                item["phrase"] = new_phrase
+                expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
+            stop_keyboard_daemon()
+            self._verify_saved_rows(expected)
+            self._refresh_table()
+            self._refresh_tokens()
+            self._status(t("vb_done", a=old_ver, b=new_ver, n=len(affected)))
+            win.destroy()
+
+        new_entry.bind("<Return>", lambda _: do_bump())
+
+        bf = tk.Frame(win, bg=COLORS["bg"])
+        bf.pack(pady=(4, 16))
+        self._make_button(bf, t("vb_apply"), do_bump, COLORS["accent"], "white").pack(side="left", padx=6)
+        self._make_button(bf, t("dlg_cancel"), win.destroy, COLORS["secondary"], "white").pack(side="left", padx=6)
+
+        self._center_dialog(win, self)
 
     def _find_replace(self):
         win = tk.Toplevel(self)
         win.title(t("find_title"))
-        win.configure(bg="white")
+        win.configure(bg=COLORS["bg"])
         win.resizable(False, False)
-        pad = {"padx": 16, "pady": 6}
+        win.transient(self)
+        pad = {"padx": 20, "pady": 8}
         for row, lbl in enumerate([t("find_label"), t("replace_label")]):
-            tk.Label(win, text=lbl, bg="white",
-                     font=("SF Pro Text", 12)).grid(row=row, column=0, sticky="w", **pad)
+            tk.Label(win, text=lbl, bg=COLORS["bg"], fg=COLORS["text"],
+                     font=FONT).grid(row=row, column=0, sticky="w", **pad)
         fv, rv = tk.StringVar(), tk.StringVar()
         for row, var in enumerate([fv, rv]):
-            tk.Entry(win, textvariable=var, width=40,
-                     font=("SF Pro Text", 12)).grid(row=row, column=1, sticky="ew", **pad)
+            e_frame = tk.Frame(win, bg=COLORS["card"], highlightbackground=COLORS["card_border"],
+                               highlightthickness=1, bd=0)
+            e_frame.grid(row=row, column=1, sticky="ew", **pad)
+            tk.Entry(e_frame, textvariable=var, width=40,
+                     font=FONT, relief="flat", bd=0, bg=COLORS["card"],
+                     insertbackground=COLORS["text"]).pack(padx=8, pady=6)
 
         original_query = self.search_var.get()
         matches_var = tk.StringVar(value=t("find_matches", n=0))
-        tk.Label(win, textvariable=matches_var, bg="white", fg="#636366",
-                 font=("SF Pro Text", 11)).grid(row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 6))
+        tk.Label(win, textvariable=matches_var, bg=COLORS["bg"], fg=COLORS["text_sec"],
+                 font=FONT_SMALL).grid(row=2, column=0, columnspan=2, sticky="w", padx=20, pady=(0, 6))
 
         def update_preview(*_):
             f = fv.get()
@@ -611,12 +902,12 @@ class App(tk.Tk):
                 messagebox.showinfo(t("err_no_match_title"), t("err_no_match", f=f))
                 return
             backup()
-            stop_keyboard_daemon()
             expected = []
             for item in affected:
                 new_phrase = item["phrase"].replace(f, r)
                 update_item(item["pk"], item["shortcut"], new_phrase)
                 expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
+            stop_keyboard_daemon()
             self._verify_saved_rows(expected)
             self._load()
             self._status(t("status_findreplace", n=len(affected)))
@@ -629,10 +920,12 @@ class App(tk.Tk):
 
         win.protocol("WM_DELETE_WINDOW", close_dialog)
 
-        bf = tk.Frame(win, bg="white")
-        bf.grid(row=3, column=0, columnspan=2, pady=10)
-        self._make_button(bf, t("find_btn"),    do_replace,  "#0051a8", "white").pack(side="left", padx=6)
-        self._make_button(bf, t("dlg_cancel"),  close_dialog, "#3a3a3a", "white").pack(side="left", padx=6)
+        bf = tk.Frame(win, bg=COLORS["bg"])
+        bf.grid(row=3, column=0, columnspan=2, pady=16)
+        self._make_button(bf, t("find_btn"),    do_replace,  COLORS["accent"], "white").pack(side="left", padx=6)
+        self._make_button(bf, t("dlg_cancel"),  close_dialog, COLORS["secondary"], "white").pack(side="left", padx=6)
+
+        self._center_dialog(win, self)
 
 # ── Start ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":

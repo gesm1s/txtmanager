@@ -74,6 +74,21 @@ cp -R dist/Txtmanager.app /Applications/
 
 ---
 
+## How to use
+
+1. Launch Txtmanager
+2. Your existing macOS text replacements are loaded automatically
+3. **Add**: Click **+ Ny snarvei** / **+ New shortcut** to add a new entry
+4. **Edit**: Double-click any row to edit shortcut or phrase
+5. **Delete**: Select a row and click **🗑 Slett** / **🗑 Delete**
+6. **Find & Replace**: Click the button to search and replace across all phrases — the main list filters live as you type
+7. **Version Bump**: Click **🔢 Versjonsoppdatering** to auto-detect version numbers across your phrases and update them in one click
+8. **Repeated values** (right panel): Click any value that appears in multiple phrases to edit and replace it instantly
+
+Changes are saved directly to macOS and propagated to all apps (Safari, Chrome, Slack, etc.) within seconds. iCloud syncs changes to your iPhone/iPad automatically.
+
+---
+
 ## How it works
 
 Apple stores text replacements in a SQLite database at:
