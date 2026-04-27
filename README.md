@@ -22,7 +22,7 @@ Built by reverse-engineering the undocumented `KeyboardServices/TextReplacements
 - 🔍 Auto-detects repeated values across phrases for batch updating (e.g. version numbers, device names)
 - 🖱 Click repeated values to edit directly in the side panel and apply replacement immediately
 - 🛡 Post-save verification warns if an update appears to be overwritten by sync/daemon state
-- 💾 Writes directly to macOS — changes are active immediately
+- 💾 Writes directly to macOS — changes are active immediately in all apps
 - ☁️ Syncs automatically to iPhone/iPad via iCloud/CloudKit
 - 🔒 Creates a timestamped backup before every save
 
@@ -85,7 +85,7 @@ cp -R dist/Txtmanager.app /Applications/
 7. **Version Bump**: Click **🔢 Versjonsoppdatering** to auto-detect version numbers across your phrases and update them in one click
 8. **Repeated values** (right panel): Click any value that appears in multiple phrases to edit and replace it instantly
 
-Changes are saved directly to macOS and propagated to all apps (Safari, Chrome, Slack, etc.) within seconds. iCloud syncs changes to your iPhone/iPad automatically.
+Changes are saved directly to macOS and propagated to all apps (Safari, Slack, Outlook, etc.) immediately. iCloud syncs changes to your iPhone/iPad automatically.
 
 ---
 
@@ -97,9 +97,25 @@ Apple stores text replacements in a SQLite database at:
 ~/Library/KeyboardServices/TextReplacements.db
 ```
 
-TxtManager reads and writes directly to this database using the `ZTEXTREPLACEMENTENTRY` table. After each change, it performs a WAL checkpoint to ensure all data is written to the main database file, then stops `keyboardservicesd` so the daemon restarts with the updated data — no reboot required.
+TxtManager reads and writes directly to this database using the `ZTEXTREPLACEMENTENTRY` table. After each change, it performs a WAL checkpoint to flush all data to the main database file.
 
-Changes are picked up by iCloud and synced to all your Apple devices automatically.
+### Propagating changes to running apps
+
+macOS uses two separate mechanisms to deliver text replacements to apps:
+
+| App type | Mechanism |
+|---|---|
+| NSTextView apps (TextEdit, Notes, etc.) | Read from `NSUserDictionaryReplacementItems` in `NSGlobalDomain` plist; notified via `NSSpellCheckerDidChangeAutomaticTextReplacementNotification` |
+| XPC-connected apps (Safari, Slack, Outlook) | Receive push updates from `keyboardservicesd` via a private XPC service |
+
+To handle both, TxtManager:
+
+1. **Writes to the SQLite database** (source of truth for all storage and iCloud sync)
+2. **Updates `NSUserDictionaryReplacementItems`** and sends `NSSpellCheckerDidChangeAutomaticTextReplacementNotification` (for TextEdit and similar apps)
+3. **Calls the private `_KSTextReplacementClientStore` XPC API** from `KeyboardServices.framework` — the same API used internally by System Settings — to push changes directly to `keyboardservicesd`, which immediately notifies Safari, Slack, Outlook and other XPC-connected apps
+
+> **Why not just restart `keyboardservicesd`?**
+> Earlier versions of TxtManager restarted the `keyboardservicesd` daemon after a DB write. This worked initially but broke in later macOS 15.x/26 updates: restarting the daemon causes it to re-sync from iCloud (CloudKit), which can overwrite local changes with stale values from other devices. It also disrupts XPC connections in running apps, causing reconnect delays of several minutes. Using the official XPC client API avoids all of these issues.
 
 ### Database schema
 
@@ -151,7 +167,7 @@ A timestamped backup of the database is created automatically before every chang
 
 ## Disclaimer
 
-This tool accesses an undocumented internal macOS database. While it works reliably on macOS 15/26, future macOS updates may change the storage format. Always keep backups.
+This tool accesses an undocumented internal macOS database and a private system framework (`KeyboardServices.framework`). While it works reliably on macOS 15/26, future macOS updates may change the storage format or private APIs. Always keep backups.
 
 ---
 

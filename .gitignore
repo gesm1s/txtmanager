@@ -1,7 +1,7 @@
-Txtmanager.app.zip
 build/
 dist/
 icon.iconset/
 *.icns
 __pycache__/
 .DS_Store
+Txtmanager.app.zip

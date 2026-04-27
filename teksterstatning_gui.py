@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TxtManager 1.2.0 for macOS 15+/26
+TxtManager 1.4.0 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
@@ -205,62 +205,127 @@ def delete_item(pk):
     wal_checkpoint()
 
 def stop_keyboard_daemon():
-    """Restart keyboardservicesd and sync NSUserDictionaryReplacementItems.
-    Called AFTER writes + wal_checkpoint to ensure system picks up changes.
-    All work is done in the helper script (system Python) for reliability."""
-    _sync_defaults_cache()
+    """Sync text replacements to all running apps.
+    Runs in a background thread to avoid blocking the GUI."""
+    items = read_items()
+    threading.Thread(target=_sync_to_apps, args=(items,), daemon=True).start()
 
-def _sync_defaults_cache():
-    """Update NSUserDictionaryReplacementItems in NSGlobalDomain.
-    Writes a helper .py file and runs it with the SYSTEM Python (not bundled)
-    to avoid bus error in py2app. Restarts TextInputMenuAgent after."""
+def _sync_to_apps(items):
+    """Sync text replacements to all apps using the private KeyboardServices XPC API.
+    Replicates what System Settings does:
+    1. Push to keyboardservicesd via XPC -> updates Safari/Slack/Outlook immediately
+    2. Send NSSpellCheckerDidChangeAutomaticTextReplacementNotification -> updates TextEdit"""
+    import json, tempfile
+
     try:
-        items = read_items()
-        import json, tempfile
-        # Write items to a temp file for the helper to read
         payload = [{"replace": i["shortcut"], "with": i["phrase"]} for i in items]
-        data_path = os.path.join(tempfile.gettempdir(), "txtmanager_sync.json")
-        script_path = os.path.join(tempfile.gettempdir(), "txtmanager_sync.py")
+        script_path = os.path.join(tempfile.gettempdir(), "txtmanager_ks_sync.py")
+        data_path   = os.path.join(tempfile.gettempdir(), "txtmanager_notify.json")
+
         with open(data_path, "w") as f:
             json.dump(payload, f)
-        # Helper script runs with system Python (PyObjC bus-errors inside py2app)
+
         with open(script_path, "w") as f:
-            f.write("""
-import json, subprocess, os, sys, time
+            f.write(r"""
+import sys, json, time, os
 data_path = sys.argv[1]
+
 with open(data_path) as f:
     items = json.load(f)
-entries = [{"on": True, "replace": i["replace"], "with": i["with"]} for i in items]
-# 1. Restart keyboardservicesd so it re-reads the DB
-uid = os.getuid()
-subprocess.run(["launchctl", "kickstart", "-k", "gui/" + str(uid) + "/com.apple.keyboardservicesd"],
-               capture_output=True, timeout=5)
-time.sleep(1.0)
-# 2. Sync NSUserDictionaryReplacementItems plist
-from Foundation import NSUserDefaults, NSDistributedNotificationCenter
+
+import objc
+from Foundation import (NSUserDefaults, NSDistributedNotificationCenter,
+                        NSRunLoop, NSDate)
+
+objc.loadBundle('KeyboardServices',
+    bundle_path='/System/Library/PrivateFrameworks/KeyboardServices.framework',
+    module_globals=globals())
+
+KSClientStore = objc.lookUpClass('_KSTextReplacementClientStore')
+KSEntry       = objc.lookUpClass('_KSTextReplacementEntry')
+
+# Register block signatures so PyObjC can wrap Python callables as Obj-C blocks
+_void_nsobj_block = {
+    'callable': {
+        'retval': {'type': b'v'},
+        'arguments': {0: {'type': b'@?'}, 1: {'type': b'@'}},
+    }
+}
+objc.registerMetaDataForSelector(
+    b'_KSTextReplacementClientStore',
+    b'addEntries:removeEntries:withCompletionHandler:',
+    {'arguments': {4: _void_nsobj_block}})
+
+# --- Step 1: update NSUserDictionaryReplacementItems plist (for TextEdit) ---
+entries_plist = [{"on": True, "replace": i["replace"], "with": i["with"]} for i in items]
 ud = NSUserDefaults.standardUserDefaults()
 gd = dict(ud.persistentDomainForName_("NSGlobalDomain") or {})
-gd["NSUserDictionaryReplacementItems"] = entries
+gd["NSUserDictionaryReplacementItems"] = entries_plist
 ud.setPersistentDomain_forName_(gd, "NSGlobalDomain")
 ud.synchronize()
-# 3. Notify and restart text input agents
+
+# --- Step 2: push to keyboardservicesd via XPC (updates Safari/Slack/Outlook) ---
+store = KSClientStore.alloc().init()
+
+desired = {i["replace"]: i["with"] for i in items}
+desired_shortcuts = set(desired.keys())
+current_entries = store.textReplacementEntries() or []
+
+to_add    = []
+to_remove = []
+
+for entry in current_entries:
+    sc = entry.shortcut()
+    if sc in desired:
+        if entry.phrase() != desired[sc]:
+            to_remove.append(entry)
+            new_entry = KSEntry.alloc().init()
+            new_entry.setShortcut_(sc)
+            new_entry.setPhrase_(desired[sc])
+            new_entry.setNeedsSaveToCloud_(True)
+            to_add.append(new_entry)
+    else:
+        to_remove.append(entry)
+
+existing_shortcuts = {e.shortcut() for e in current_entries}
+for sc, phrase in desired.items():
+    if sc not in existing_shortcuts:
+        new_entry = KSEntry.alloc().init()
+        new_entry.setShortcut_(sc)
+        new_entry.setPhrase_(phrase)
+        new_entry.setNeedsSaveToCloud_(True)
+        to_add.append(new_entry)
+
+if to_add or to_remove:
+    done = [False]
+    def completion(err):
+        done[0] = True
+
+    store.addEntries_removeEntries_withCompletionHandler_(to_add, to_remove, completion)
+
+    deadline = time.time() + 5
+    while not done[0] and time.time() < deadline:
+        NSRunLoop.mainRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.1))
+
+# --- Step 3: notify NSTextView apps (TextEdit) ---
 center = NSDistributedNotificationCenter.defaultCenter()
 center.postNotificationName_object_userInfo_deliverImmediately_(
-    "com.apple.textInput.keyboardServices.textReplacement", None, None, True)
-time.sleep(0.5)
-subprocess.run(["killall", "TextInputMenuAgent"], check=False)
-subprocess.run(["killall", "TextInputServer"], check=False)
+    "NSSpellCheckerDidChangeAutomaticTextReplacementNotification", None, None, True)
+
 os.unlink(data_path)
 """)
-        # Run synchronously with system Python — clean env to avoid py2app interference
+
         clean_env = {k: v for k, v in os.environ.items()
                      if "PYTHON" not in k and k != "RESOURCEPATH"}
-        subprocess.run(
-            ["/usr/bin/python3", script_path, data_path],
-            timeout=15, env=clean_env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        subprocess.run(["/usr/bin/python3", script_path, data_path],
+                       timeout=15, env=clean_env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
+    except Exception as e:
+        with open(log_path, "a") as f:
+            f.write(f"EXCEPTION: {e}\n")
 
 def find_repeated_tokens(items):
     patterns = [
