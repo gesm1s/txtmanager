@@ -157,11 +157,31 @@ When opening **Find & Replace**, typing in the **Find** field now:
 
 ## Backups
 
-A timestamped backup of the database is created automatically before every change:
+A timestamped backup of the database is created automatically before every change, stored in a dedicated directory:
 
 ```
-~/Library/KeyboardServices/TextReplacements.db.backup_20260305_143022
+~/Library/Application Support/TxtManager/backups/TextReplacements.db.backup_20260429_112200
 ```
+
+At most **10 backups** are kept — older ones are deleted automatically.
+
+---
+
+## Logging
+
+If the XPC sync to running apps fails, errors are written to:
+
+```
+~/Library/Logs/TxtManager.log
+```
+
+The log file is only created when an error occurs. If it does not exist, sync is working correctly. You can view it in **Console.app** (search for "TxtManager") or in Terminal:
+
+```bash
+cat ~/Library/Logs/TxtManager.log
+```
+
+If the XPC call fails, TxtManager automatically falls back to restarting `keyboardservicesd` via `launchctl kickstart`.
 
 ---
 

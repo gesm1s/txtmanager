@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TxtManager 1.4.0 for macOS 15+/26
+TxtManager 1.4.1 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
@@ -122,14 +122,28 @@ def _normalize_shortcut(value):
     return (value or "").strip().lower()
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-DB_PATH  = os.path.expanduser("~/Library/KeyboardServices/TextReplacements.db")
+DB_PATH     = os.path.expanduser("~/Library/KeyboardServices/TextReplacements.db")
+BACKUP_DIR  = os.path.expanduser("~/Library/Application Support/TxtManager/backups")
+BACKUP_KEEP = 10
+LOG_PATH    = os.path.expanduser("~/Library/Logs/TxtManager.log")
 CD_EPOCH = 978307200
 MIN_OCCURRENCES = 2
 
 # ── Backend ────────────────────────────────────────────────────────────────────
 def backup():
-    ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    shutil.copy2(DB_PATH, DB_PATH + f".backup_{ts}")
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    shutil.copy2(DB_PATH, os.path.join(BACKUP_DIR, f"TextReplacements.db.backup_{ts}"))
+    # Keep only the most recent BACKUP_KEEP backups
+    existing = sorted(
+        [f for f in os.listdir(BACKUP_DIR) if f.startswith("TextReplacements.db.backup_")],
+        reverse=True
+    )
+    for old in existing[BACKUP_KEEP:]:
+        try:
+            os.remove(os.path.join(BACKUP_DIR, old))
+        except OSError:
+            pass
 
 def get_conn():
     con = sqlite3.connect(DB_PATH, timeout=10)
@@ -318,14 +332,30 @@ os.unlink(data_path)
         clean_env = {k: v for k, v in os.environ.items()
                      if "PYTHON" not in k and k != "RESOURCEPATH"}
 
-        subprocess.run(["/usr/bin/python3", script_path, data_path],
-                       timeout=15, env=clean_env,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
+        result = subprocess.run(["/usr/bin/python3", script_path, data_path],
+                                timeout=15, env=clean_env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            stderr_text = result.stderr.decode(errors="replace").strip()
+            with open(LOG_PATH, "a") as f:
+                f.write(f"{datetime.now().isoformat()} XPC sync script failed "
+                        f"(exit {result.returncode}):\n{stderr_text}\n")
+            # Fallback: restart keyboardservicesd the old-fashioned way
+            uid = os.getuid()
+            subprocess.run(["launchctl", "kickstart", "-k",
+                             f"gui/{uid}/com.apple.keyboardservicesd"],
+                           capture_output=True, timeout=5)
     except Exception as e:
-        with open(log_path, "a") as f:
-            f.write(f"EXCEPTION: {e}\n")
+        with open(LOG_PATH, "a") as f:
+            f.write(f"{datetime.now().isoformat()} EXCEPTION in _sync_to_apps: {e}\n")
+        # Fallback: restart keyboardservicesd
+        try:
+            uid = os.getuid()
+            subprocess.run(["launchctl", "kickstart", "-k",
+                             f"gui/{uid}/com.apple.keyboardservicesd"],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
 
 def find_repeated_tokens(items):
     patterns = [
