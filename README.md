@@ -42,12 +42,16 @@ Built by reverse-engineering the undocumented `KeyboardServices/TextReplacements
 ### Download the app (recommended)
 
 1. Download `Txtmanager.app.zip` from the [latest release](https://github.com/gesm1s/txtmanager/releases/latest)
-2. Unzip and move `Txtmanager.app` to `/Applications/`
-3. Remove the macOS quarantine flag (required because the app is not signed with an Apple Developer certificate):
+2. Unzip the archive
+3. Install and remove the macOS quarantine flag in one step (required — Finder drag-and-drop adds quarantine which silently breaks sync):
 ```bash
+rm -rf /Applications/Txtmanager.app
+ditto ~/Downloads/Txtmanager.app /Applications/Txtmanager.app
 xattr -cr /Applications/Txtmanager.app
 ```
 4. Launch from Finder or Launchpad
+
+> **Important:** Do **not** copy the app using Finder drag-and-drop. macOS adds a quarantine flag to unsigned apps copied with Finder, which silently prevents the sync script from running. Always install using the Terminal commands above.
 
 ### Run from source
 
