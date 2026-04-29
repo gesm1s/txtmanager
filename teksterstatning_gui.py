@@ -106,11 +106,40 @@ T = {
     "vb_no_versions_t":   {"no": "Ingen versjoner",       "en": "No versions"},
     "vb_done":            {"no": "✓ Oppdaterte versjon «{a}» → «{b}» i {n} snarveier.",
                            "en": "✓ Updated version «{a}» → «{b}» in {n} shortcuts."},
+    "update_available":   {"no": "🆕 Ny versjon tilgjengelig: {v} — last ned på github.com/gesm1s/txtmanager/releases",
+                           "en": "🆕 New version available: {v} — download at github.com/gesm1s/txtmanager/releases"},
 }
 
 def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
+
+APP_VERSION = "1.4.1"
+GITHUB_RELEASES_API = "https://api.github.com/repos/gesm1s/txtmanager/releases/latest"
+
+def _check_for_update(callback):
+    """Fetch latest GitHub release tag in a background thread.
+    Calls callback(latest_version) on the main thread if a newer version exists."""
+    import urllib.request, json as _json
+    def _fetch():
+        try:
+            req = urllib.request.Request(
+                GITHUB_RELEASES_API,
+                headers={"User-Agent": f"TxtManager/{APP_VERSION}"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = _json.loads(resp.read())
+            tag = data.get("tag_name", "").lstrip("v")
+            if tag and tag != APP_VERSION:
+                # Compare as tuples to handle e.g. 1.4.2 > 1.4.1
+                def _ver(s):
+                    try: return tuple(int(x) for x in s.split("."))
+                    except: return (0,)
+                if _ver(tag) > _ver(APP_VERSION):
+                    callback(tag)
+        except Exception:
+            pass  # silently ignore network errors
+    threading.Thread(target=_fetch, daemon=True).start()
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 def _darken(hex_color):
@@ -528,6 +557,8 @@ class App(tk.Tk):
         self.resizable(True, True)
         self.deiconify()
         self.after(50, self._load)
+        # Check for updates after window is shown — runs in background thread
+        _check_for_update(lambda v: self.after(0, lambda: self._status(t("update_available", v=v))))
 
     @staticmethod
     def _center_dialog(dialog, parent):
