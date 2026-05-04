@@ -114,7 +114,7 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 GITHUB_RELEASES_API = "https://api.github.com/repos/gesm1s/txtmanager/releases/latest"
 
 def _check_for_update(callback):
@@ -253,11 +253,13 @@ def stop_keyboard_daemon():
     items = read_items()
     threading.Thread(target=_sync_to_apps, args=(items,), daemon=True).start()
 
-def _sync_to_apps(items):
+def _sync_to_apps(items, _retry=0):
     """Sync text replacements to all apps using the private KeyboardServices XPC API.
     Replicates what System Settings does:
     1. Push to keyboardservicesd via XPC -> updates Safari/Slack/Outlook immediately
-    2. Send NSSpellCheckerDidChangeAutomaticTextReplacementNotification -> updates TextEdit"""
+    2. Send NSSpellCheckerDidChangeAutomaticTextReplacementNotification -> updates TextEdit
+    Retries up to 3 times with increasing delay to handle race conditions at login
+    (keyboardservicesd may not be fully ready when the app auto-starts at boot)."""
     import json, tempfile
 
     try:
@@ -376,15 +378,17 @@ os.unlink(data_path)
                            capture_output=True, timeout=5)
     except Exception as e:
         with open(LOG_PATH, "a") as f:
-            f.write(f"{datetime.now().isoformat()} EXCEPTION in _sync_to_apps: {e}\n")
-        # Fallback: restart keyboardservicesd
-        try:
-            uid = os.getuid()
-            subprocess.run(["launchctl", "kickstart", "-k",
-                             f"gui/{uid}/com.apple.keyboardservicesd"],
-                           capture_output=True, timeout=5)
-        except Exception:
-            pass
+            f.write(f"{datetime.now().isoformat()} EXCEPTION in _sync_to_apps (attempt {_retry + 1}): {e}\n")
+        # Retry with backoff: 10s, 30s, 60s — handles keyboardservicesd not ready at login
+        retry_delays = [10, 30, 60]
+        if _retry < len(retry_delays):
+            delay = retry_delays[_retry]
+            with open(LOG_PATH, "a") as f:
+                f.write(f"{datetime.now().isoformat()} Retrying sync in {delay}s (attempt {_retry + 2}/4)...\n")
+            threading.Timer(delay, _sync_to_apps, args=(items,), kwargs={"_retry": _retry + 1}).start()
+        else:
+            with open(LOG_PATH, "a") as f:
+                f.write(f"{datetime.now().isoformat()} All sync attempts failed — giving up.\n")
 
 def find_repeated_tokens(items):
     patterns = [
