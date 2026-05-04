@@ -32,62 +32,13 @@ jobs:
       - name: Build app
         run: python3 setup.py py2app
 
-      - name: Import signing certificate
-        env:
-          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
-          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          echo "$MACOS_CERTIFICATE" | base64 --decode > certificate.p12
-          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
-          security import certificate.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-          rm certificate.p12
-
-      - name: Sign app
-        env:
-          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
-        run: |
-          APP="dist/Txtmanager.app"
-          # Sign embedded .so/.dylib files first (leaf nodes)
-          find "$APP" \( -name "*.so" -o -name "*.dylib" \) | while read f; do
-            codesign --force --options runtime \
-              --entitlements entitlements.plist \
-              --sign "$APPLE_SIGN_IDENTITY" "$f"
-          done
-          # Sign embedded frameworks
-          find "$APP/Contents/Frameworks" -maxdepth 1 -name "*.framework" 2>/dev/null | while read f; do
-            codesign --force --options runtime \
-              --entitlements entitlements.plist \
-              --sign "$APPLE_SIGN_IDENTITY" "$f"
-          done
-          # Sign the app bundle
-          codesign --force --options runtime \
-            --entitlements entitlements.plist \
-            --sign "$APPLE_SIGN_IDENTITY" \
-            "$APP"
-          # Verify
-          codesign --verify --deep --strict "$APP"
-
-      - name: Create ZIP for notarization
-        run: ditto -c -k --keepParent "dist/Txtmanager.app" "dist/Txtmanager-notarize.zip"
-
-      - name: Notarize app
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          xcrun notarytool submit "dist/Txtmanager-notarize.zip" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait
-
-      - name: Staple notarization
-        run: xcrun stapler staple "dist/Txtmanager.app"
+      # DISABLED: Signing og notarization er deaktivert til GitHub Secrets er satt opp.
+      # Se .github/copilot-instructions.md for hvilke secrets som trengs og hvordan aktivere.
+      # - name: Import signing certificate
+      # - name: Sign app
+      # - name: Create ZIP for notarization
+      # - name: Notarize app
+      # - name: Staple notarization
 
       - name: Create distribution ZIP
         run: |
