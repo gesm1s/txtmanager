@@ -4,7 +4,24 @@ All notable changes to Txtmanager are documented here.
 
 ## [Unreleased]
 
-No user-facing changes since v1.4.2.
+No user-facing changes since v1.4.3.
+
+## [1.4.3] – 2026-05-12
+
+### Added
+- Versjon og byggedato vises øverst til høyre i vinduet
+- «Verktøy»-meny med snarveier til loggfil (åpne i Console, vis i Finder)
+
+### Fixed
+- Stille sync-feil ved oppstart: XPC-scriptet returnerer nå feil ved intern timeout, slik at retry-mekanismen trigges korrekt
+- Loggfilen fikk ikke oppføringer ved sync-feil etter v1.4.2
+- Midlertidig datafil i `/tmp` ble ikke ryddet opp ved XPC-timeout
+
+### Changed
+- Retry-forsinkelser samlet i én konstant (`_SYNC_RETRY_DELAYS`) i stedet for duplisert i to steder
+
+### Removed
+- Død kode: ubrukt variabel `desired_shortcuts` i XPC-sync-skriptet
 
 ## [1.4.2] – 2026-05-04
 
@@ -61,7 +78,8 @@ No user-facing changes since v1.4.2.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.2...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.3...HEAD
+[1.4.3]: https://github.com/gesm1s/txtmanager/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/gesm1s/txtmanager/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/gesm1s/txtmanager/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/gesm1s/txtmanager/compare/v1.3.0...v1.4.0

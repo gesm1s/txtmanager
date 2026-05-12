@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-TxtManager 1.4.1 for macOS 15+/26
+TxtManager 1.4.3 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
 - Bilingual: Norwegian / English (follows macOS language setting)
 """
 
-import sqlite3, time, uuid, subprocess, os, re, shutil, locale, threading
+import sys, sqlite3, time, uuid, subprocess, os, re, shutil, locale, threading
 from collections import Counter
 from datetime import datetime
 import tkinter as tk
@@ -108,13 +108,27 @@ T = {
                            "en": "✓ Updated version «{a}» → «{b}» in {n} shortcuts."},
     "update_available":   {"no": "🆕 Ny versjon tilgjengelig: {v} — last ned på github.com/gesm1s/txtmanager/releases",
                            "en": "🆕 New version available: {v} — download at github.com/gesm1s/txtmanager/releases"},
+    "version_label":      {"no": "v{v}  •  Bygget {b}",      "en": "v{v}  •  Built {b}"},
+    "menu_tools":         {"no": "Verktøy",                   "en": "Tools"},
+    "menu_open_log":      {"no": "Vis loggfil i Console",     "en": "Open log in Console"},
+    "menu_reveal_log":    {"no": "Vis loggfil i Finder",      "en": "Reveal log in Finder"},
 }
 
 def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
+
+def _build_date():
+    try:
+        path = sys.executable if getattr(sys, "frozen", False) else __file__
+        return datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d")
+    except Exception:
+        return "?"
+
+APP_BUILD = _build_date()
+
 GITHUB_RELEASES_API = "https://api.github.com/repos/gesm1s/txtmanager/releases/latest"
 
 def _check_for_update(callback):
@@ -253,6 +267,8 @@ def stop_keyboard_daemon():
     items = read_items()
     threading.Thread(target=_sync_to_apps, args=(items,), daemon=True).start()
 
+_SYNC_RETRY_DELAYS = [10, 30, 60]
+
 def _sync_to_apps(items, _retry=0):
     """Sync text replacements to all apps using the private KeyboardServices XPC API.
     Replicates what System Settings does:
@@ -313,7 +329,6 @@ ud.synchronize()
 store = KSClientStore.alloc().init()
 
 desired = {i["replace"]: i["with"] for i in items}
-desired_shortcuts = set(desired.keys())
 current_entries = store.textReplacementEntries() or []
 
 to_add    = []
@@ -352,6 +367,12 @@ if to_add or to_remove:
     while not done[0] and time.time() < deadline:
         NSRunLoop.mainRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.1))
 
+    if not done[0]:
+        try: os.unlink(data_path)
+        except OSError: pass
+        print("XPC completion timed out — keyboardservicesd not ready", file=sys.stderr)
+        sys.exit(1)
+
 # --- Step 3: notify NSTextView apps (TextEdit) ---
 center = NSDistributedNotificationCenter.defaultCenter()
 center.postNotificationName_object_userInfo_deliverImmediately_(
@@ -370,19 +391,26 @@ os.unlink(data_path)
             stderr_text = result.stderr.decode(errors="replace").strip()
             with open(LOG_PATH, "a") as f:
                 f.write(f"{datetime.now().isoformat()} XPC sync script failed "
-                        f"(exit {result.returncode}):\n{stderr_text}\n")
-            # Fallback: restart keyboardservicesd the old-fashioned way
-            uid = os.getuid()
-            subprocess.run(["launchctl", "kickstart", "-k",
-                             f"gui/{uid}/com.apple.keyboardservicesd"],
-                           capture_output=True, timeout=5)
+                        f"(exit {result.returncode}, attempt {_retry + 1}):\n{stderr_text}\n")
+            if _retry < len(_SYNC_RETRY_DELAYS):
+                delay = _SYNC_RETRY_DELAYS[_retry]
+                with open(LOG_PATH, "a") as f:
+                    f.write(f"{datetime.now().isoformat()} Retrying sync in {delay}s "
+                            f"(attempt {_retry + 2}/4)...\n")
+                threading.Timer(delay, _sync_to_apps, args=(items,), kwargs={"_retry": _retry + 1}).start()
+            else:
+                with open(LOG_PATH, "a") as f:
+                    f.write(f"{datetime.now().isoformat()} All sync attempts failed — "
+                            f"falling back to launchctl kickstart.\n")
+                uid = os.getuid()
+                subprocess.run(["launchctl", "kickstart", "-k",
+                                 f"gui/{uid}/com.apple.keyboardservicesd"],
+                               capture_output=True, timeout=5)
     except Exception as e:
         with open(LOG_PATH, "a") as f:
             f.write(f"{datetime.now().isoformat()} EXCEPTION in _sync_to_apps (attempt {_retry + 1}): {e}\n")
-        # Retry with backoff: 10s, 30s, 60s — handles keyboardservicesd not ready at login
-        retry_delays = [10, 30, 60]
-        if _retry < len(retry_delays):
-            delay = retry_delays[_retry]
+        if _retry < len(_SYNC_RETRY_DELAYS):
+            delay = _SYNC_RETRY_DELAYS[_retry]
             with open(LOG_PATH, "a") as f:
                 f.write(f"{datetime.now().isoformat()} Retrying sync in {delay}s (attempt {_retry + 2}/4)...\n")
             threading.Timer(delay, _sync_to_apps, args=(items,), kwargs={"_retry": _retry + 1}).start()
@@ -552,8 +580,29 @@ class App(tk.Tk):
         self.configure(bg=COLORS["bg"])
         self.items = []
         self._build_ui()
+        self._build_menu()
         # Defer geometry + show + load until mainloop is running
         self.after(0, self._initialize_window)
+
+    def _build_menu(self):
+        menubar = tk.Menu(self)
+        tools = tk.Menu(menubar, tearoff=0)
+        tools.add_command(label=t("menu_open_log"),   command=self._open_log)
+        tools.add_command(label=t("menu_reveal_log"), command=self._reveal_log)
+        menubar.add_cascade(label=t("menu_tools"), menu=tools)
+        self.config(menu=menubar)
+
+    def _open_log(self):
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        if not os.path.exists(LOG_PATH):
+            open(LOG_PATH, "w").close()
+        subprocess.run(["open", "-a", "Console", LOG_PATH], capture_output=True)
+
+    def _reveal_log(self):
+        if os.path.exists(LOG_PATH):
+            subprocess.run(["open", "-R", LOG_PATH], capture_output=True)
+        else:
+            subprocess.run(["open", os.path.dirname(LOG_PATH)], capture_output=True)
 
     def _initialize_window(self):
         self.geometry("1100x720")
@@ -625,6 +674,8 @@ class App(tk.Tk):
         title_frame.pack(fill="x", padx=24, pady=(20, 4))
         tk.Label(title_frame, text=t("title"), bg=COLORS["bg"], fg=COLORS["text"],
                  font=FONT_TITLE).pack(side="left")
+        tk.Label(title_frame, text=t("version_label", v=APP_VERSION, b=APP_BUILD),
+                 bg=COLORS["bg"], fg=COLORS["text_sec"], font=FONT_SMALL).pack(side="right", pady=8)
 
         # Main content area
         main = tk.Frame(self, bg=COLORS["bg"])
