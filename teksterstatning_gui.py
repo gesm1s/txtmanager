@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TxtManager 1.4.5 for macOS 15+/26
+TxtManager 1.4.6 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
@@ -118,7 +118,7 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.5"
+APP_VERSION = "1.4.6"
 
 def _build_date():
     try:
@@ -371,7 +371,7 @@ if to_add or to_remove:
         try: os.unlink(data_path)
         except OSError: pass
         print("XPC completion timed out - keyboardservicesd not ready", file=sys.stderr)
-        sys.exit(1)
+        os._exit(1)
 
 # --- Step 3: notify NSTextView apps (TextEdit) ---
 center = NSDistributedNotificationCenter.defaultCenter()

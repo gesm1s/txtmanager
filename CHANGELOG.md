@@ -4,7 +4,12 @@ All notable changes to Txtmanager are documented here.
 
 ## [Unreleased]
 
-No user-facing changes since v1.4.5.
+No user-facing changes since v1.4.6.
+
+## [1.4.6] – 2026-05-22
+
+### Fixed
+- `sys.exit(1)` i XPC-skriptet avslutter ikke prosessen i PyObjC/NSRunLoop-konteksten — utføringen fortsetter til den siste `try: os.unlink` som er stille, og prosessen avslutter med kode 0. Ytre kode trodde synkroniseringen gikk bra mens XPC faktisk hadde timeout. Erstattet med `os._exit(1)` som kaller C-laget direkte og ikke kan fanges av PyObjC.
 
 ## [1.4.5] – 2026-05-22
 
@@ -88,7 +93,8 @@ No user-facing changes since v1.4.5.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.5...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.6...HEAD
+[1.4.6]: https://github.com/gesm1s/txtmanager/compare/v1.4.5...v1.4.6
 [1.4.5]: https://github.com/gesm1s/txtmanager/compare/v1.4.4...v1.4.5
 [1.4.4]: https://github.com/gesm1s/txtmanager/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/gesm1s/txtmanager/compare/v1.4.2...v1.4.3
