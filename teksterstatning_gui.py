@@ -378,7 +378,8 @@ center = NSDistributedNotificationCenter.defaultCenter()
 center.postNotificationName_object_userInfo_deliverImmediately_(
     "NSSpellCheckerDidChangeAutomaticTextReplacementNotification", None, None, True)
 
-os.unlink(data_path)
+try: os.unlink(data_path)
+except OSError: pass
 """)
 
         clean_env = {k: v for k, v in os.environ.items()
