@@ -4,7 +4,12 @@ All notable changes to Txtmanager are documented here.
 
 ## [Unreleased]
 
-No user-facing changes since v1.4.4.
+No user-facing changes since v1.4.5.
+
+## [1.4.5] – 2026-05-22
+
+### Fixed
+- `FileNotFoundError` i XPC-skriptet ved `os.unlink(data_path)` på siste linje: `sys.exit(1)` avslutter ikke alltid prosessen i PyObjC-kjøreloopkontekst, og filen var allerede slettet av timeout-stien. Pakket inn i `try/except OSError`.
 
 ## [1.4.4] – 2026-05-22
 
@@ -83,7 +88,8 @@ No user-facing changes since v1.4.4.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.4...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.5...HEAD
+[1.4.5]: https://github.com/gesm1s/txtmanager/compare/v1.4.4...v1.4.5
 [1.4.4]: https://github.com/gesm1s/txtmanager/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/gesm1s/txtmanager/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/gesm1s/txtmanager/compare/v1.4.1...v1.4.2

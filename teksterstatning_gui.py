@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TxtManager 1.4.4 for macOS 15+/26
+TxtManager 1.4.5 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
@@ -118,7 +118,7 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 
 def _build_date():
     try:
