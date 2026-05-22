@@ -4,7 +4,12 @@ All notable changes to Txtmanager are documented here.
 
 ## [Unreleased]
 
-No user-facing changes since v1.4.3.
+No user-facing changes since v1.4.4.
+
+## [1.4.4] – 2026-05-22
+
+### Fixed
+- XPC-sync feilet alltid med `UnicodeEncodeError` i app-bundle-miljøet fordi `open()` ble kalt uten `encoding="utf-8"`. Alle synkroniseringer har feilet siden v1.4.3 — dette er årsaken til sporadiske reverteringer. Fikset ved eksplisitt UTF-8 på alle relevante filoperasjoner og `PYTHONUTF8=1` i subprocess-miljøet.
 
 ## [1.4.3] – 2026-05-12
 
@@ -78,7 +83,8 @@ No user-facing changes since v1.4.3.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.3...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.4...HEAD
+[1.4.4]: https://github.com/gesm1s/txtmanager/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/gesm1s/txtmanager/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/gesm1s/txtmanager/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/gesm1s/txtmanager/compare/v1.4.0...v1.4.1

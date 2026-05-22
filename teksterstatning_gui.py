@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TxtManager 1.4.3 for macOS 15+/26
+TxtManager 1.4.4 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
@@ -118,7 +118,7 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.4"
 
 def _build_date():
     try:
@@ -283,15 +283,15 @@ def _sync_to_apps(items, _retry=0):
         script_path = os.path.join(tempfile.gettempdir(), "txtmanager_ks_sync.py")
         data_path   = os.path.join(tempfile.gettempdir(), "txtmanager_notify.json")
 
-        with open(data_path, "w") as f:
+        with open(data_path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
 
-        with open(script_path, "w") as f:
+        with open(script_path, "w", encoding="utf-8") as f:
             f.write(r"""
 import sys, json, time, os
 data_path = sys.argv[1]
 
-with open(data_path) as f:
+with open(data_path, encoding="utf-8") as f:
     items = json.load(f)
 
 import objc
@@ -370,7 +370,7 @@ if to_add or to_remove:
     if not done[0]:
         try: os.unlink(data_path)
         except OSError: pass
-        print("XPC completion timed out — keyboardservicesd not ready", file=sys.stderr)
+        print("XPC completion timed out - keyboardservicesd not ready", file=sys.stderr)
         sys.exit(1)
 
 # --- Step 3: notify NSTextView apps (TextEdit) ---
@@ -383,6 +383,7 @@ os.unlink(data_path)
 
         clean_env = {k: v for k, v in os.environ.items()
                      if "PYTHON" not in k and k != "RESOURCEPATH"}
+        clean_env["PYTHONUTF8"] = "1"
 
         result = subprocess.run(["/usr/bin/python3", script_path, data_path],
                                 timeout=15, env=clean_env,
