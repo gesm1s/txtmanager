@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TxtManager 1.4.6 for macOS 15+/26
+TxtManager 1.4.7 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
@@ -106,8 +106,9 @@ T = {
     "vb_no_versions_t":   {"no": "Ingen versjoner",       "en": "No versions"},
     "vb_done":            {"no": "✓ Oppdaterte versjon «{a}» → «{b}» i {n} snarveier.",
                            "en": "✓ Updated version «{a}» → «{b}» in {n} shortcuts."},
-    "update_available":   {"no": "🆕 Ny versjon tilgjengelig: {v} — last ned på github.com/gesm1s/txtmanager/releases",
-                           "en": "🆕 New version available: {v} — download at github.com/gesm1s/txtmanager/releases"},
+    "update_available":   {"no": "Ny versjon tilgjengelig: {v}",
+                           "en": "New version available: {v}"},
+    "update_download":    {"no": "Last ned →",                  "en": "Download →"},
     "version_label":      {"no": "v{v}  •  Bygget {b}",      "en": "v{v}  •  Built {b}"},
     "menu_tools":         {"no": "Verktøy",                   "en": "Tools"},
     "menu_open_log":      {"no": "Vis loggfil i Console",     "en": "Open log in Console"},
@@ -118,7 +119,7 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.6"
+APP_VERSION = "1.4.7"
 
 def _build_date():
     try:
@@ -606,6 +607,26 @@ class App(tk.Tk):
         else:
             subprocess.run(["open", os.path.dirname(LOG_PATH)], capture_output=True)
 
+    def _show_update_banner(self, version):
+        import webbrowser
+        RELEASES_URL = "https://github.com/gesm1s/txtmanager/releases"
+        banner = tk.Frame(self, bg="#f6c90e", pady=6)
+        banner.pack(fill="x", before=self._title_frame)
+
+        tk.Label(banner, text=f"🆕  {t('update_available', v=version)}",
+                 bg="#f6c90e", fg="#333333", font=FONT_SMALL).pack(side="left", padx=16)
+
+        dl = tk.Label(banner, text=t("update_download"),
+                      bg="#d4aa00", fg="#333333", font=FONT_SMALL,
+                      cursor="pointinghand", padx=10, pady=4)
+        dl.pack(side="left", padx=4)
+        dl.bind("<Button-1>", lambda e: webbrowser.open(RELEASES_URL))
+
+        x = tk.Label(banner, text="✕", bg="#f6c90e", fg="#555555",
+                     font=FONT_SMALL, cursor="pointinghand", padx=16)
+        x.pack(side="right")
+        x.bind("<Button-1>", lambda e: banner.destroy())
+
     def _initialize_window(self):
         self.geometry("1100x720")
         self.minsize(900, 500)
@@ -613,7 +634,7 @@ class App(tk.Tk):
         self.deiconify()
         self.after(50, self._load)
         # Check for updates after window is shown — runs in background thread
-        _check_for_update(lambda v: self.after(0, lambda: self._status(t("update_available", v=v))))
+        _check_for_update(lambda v: self.after(0, lambda: self._show_update_banner(v)))
 
     @staticmethod
     def _center_dialog(dialog, parent):
@@ -673,6 +694,7 @@ class App(tk.Tk):
 
         # Title
         title_frame = tk.Frame(self, bg=COLORS["bg"])
+        self._title_frame = title_frame
         title_frame.pack(fill="x", padx=24, pady=(20, 4))
         tk.Label(title_frame, text=t("title"), bg=COLORS["bg"], fg=COLORS["text"],
                  font=FONT_TITLE).pack(side="left")
