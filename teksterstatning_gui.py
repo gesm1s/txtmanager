@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TxtManager 1.4.7 for macOS 15+/26
+TxtManager 1.4.8 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
@@ -108,7 +108,13 @@ T = {
                            "en": "✓ Updated version «{a}» → «{b}» in {n} shortcuts."},
     "update_available":   {"no": "Ny versjon tilgjengelig: {v}",
                            "en": "New version available: {v}"},
-    "update_download":    {"no": "Last ned →",                  "en": "Download →"},
+    "update_now":         {"no": "Oppdater nå",                 "en": "Update now"},
+    "update_download":    {"no": "Mer info →",                  "en": "More info →"},
+    "update_downloading": {"no": "⬇️  Laster ned v{v}...",      "en": "⬇️  Downloading v{v}..."},
+    "update_extracting":  {"no": "📦  Pakker ut...",             "en": "📦  Extracting..."},
+    "update_installing":  {"no": "🔧  Installerer...",           "en": "🔧  Installing..."},
+    "update_restarting":  {"no": "✅  Ferdig! Starter på nytt...", "en": "✅  Done! Restarting..."},
+    "update_error":       {"no": "❌  Feil: {e}",               "en": "❌  Error: {e}"},
     "version_label":      {"no": "v{v}  •  Bygget {b}",      "en": "v{v}  •  Built {b}"},
     "menu_tools":         {"no": "Verktøy",                   "en": "Tools"},
     "menu_open_log":      {"no": "Vis loggfil i Console",     "en": "Open log in Console"},
@@ -119,7 +125,7 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.7"
+APP_VERSION = "1.4.8"
 
 def _build_date():
     try:
@@ -616,6 +622,12 @@ class App(tk.Tk):
         tk.Label(banner, text=f"🆕  {t('update_available', v=version)}",
                  bg="#f6c90e", fg="#333333", font=FONT_SMALL).pack(side="left", padx=16)
 
+        upd = tk.Label(banner, text=t("update_now"),
+                       bg="#2e7d32", fg="white", font=FONT_SMALL,
+                       cursor="pointinghand", padx=10, pady=4)
+        upd.pack(side="left", padx=4)
+        upd.bind("<Button-1>", lambda e: self._auto_update(version, banner))
+
         dl = tk.Label(banner, text=t("update_download"),
                       bg="#d4aa00", fg="#333333", font=FONT_SMALL,
                       cursor="pointinghand", padx=10, pady=4)
@@ -626,6 +638,53 @@ class App(tk.Tk):
                      font=FONT_SMALL, cursor="pointinghand", padx=16)
         x.pack(side="right")
         x.bind("<Button-1>", lambda e: banner.destroy())
+
+    def _auto_update(self, version, banner):
+        import urllib.request, zipfile, tempfile
+
+        ZIP_URL = (f"https://github.com/gesm1s/txtmanager/releases"
+                   f"/download/v{version}/Txtmanager.zip")
+
+        for w in banner.winfo_children():
+            w.destroy()
+        progress_lbl = tk.Label(banner, text=t("update_downloading", v=version),
+                                bg="#f6c90e", fg="#333333", font=FONT_SMALL)
+        progress_lbl.pack(side="left", padx=16, pady=2)
+
+        def _set(msg):
+            self.after(0, lambda m=msg: progress_lbl.config(text=m))
+
+        def _do():
+            try:
+                tmp = tempfile.mkdtemp(prefix="txtmanager_update_")
+                zip_path = os.path.join(tmp, "Txtmanager.zip")
+
+                def _hook(count, block, total):
+                    if total > 0:
+                        pct = min(100, count * block * 100 // total)
+                        _set(t("update_downloading", v=version) + f" {pct}%")
+
+                urllib.request.urlretrieve(ZIP_URL, zip_path, _hook)
+                _set(t("update_extracting"))
+
+                with zipfile.ZipFile(zip_path) as zf:
+                    zf.extractall(tmp)
+
+                new_app = os.path.join(tmp, "Txtmanager.app")
+                dest = "/Applications/Txtmanager.app"
+                _set(t("update_installing"))
+                subprocess.run(["rm", "-rf", dest], check=True)
+                subprocess.run(["ditto", new_app, dest], check=True)
+                subprocess.run(["xattr", "-cr", dest], check=True)
+
+                _set(t("update_restarting"))
+                subprocess.Popen(["open", dest])
+                self.after(1500, lambda: os._exit(0))
+
+            except Exception as exc:
+                _set(t("update_error", e=exc))
+
+        threading.Thread(target=_do, daemon=True).start()
 
     def _initialize_window(self):
         self.geometry("1100x720")

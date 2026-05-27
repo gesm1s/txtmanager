@@ -4,7 +4,12 @@ All notable changes to Txtmanager are documented here.
 
 ## [Unreleased]
 
-No user-facing changes since v1.4.7.
+No user-facing changes since v1.4.8.
+
+## [1.4.8] – 2026-05-27
+
+### Added
+- «Oppdater nå»-knapp i oppdateringsbanneret: laster ned ZIP fra GitHub Releases, pakker ut, installerer med `ditto` + `xattr -cr`, og starter appen på nytt automatisk. Fremdrift vises i banneret (%, pakker ut, installerer, starter på nytt).
 
 ## [1.4.7] – 2026-05-27
 
@@ -98,7 +103,8 @@ No user-facing changes since v1.4.7.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.7...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.8...HEAD
+[1.4.8]: https://github.com/gesm1s/txtmanager/compare/v1.4.7...v1.4.8
 [1.4.7]: https://github.com/gesm1s/txtmanager/compare/v1.4.6...v1.4.7
 [1.4.6]: https://github.com/gesm1s/txtmanager/compare/v1.4.5...v1.4.6
 [1.4.5]: https://github.com/gesm1s/txtmanager/compare/v1.4.4...v1.4.5
