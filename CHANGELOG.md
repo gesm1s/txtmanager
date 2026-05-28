@@ -4,7 +4,12 @@ All notable changes to Txtmanager are documented here.
 
 ## [Unreleased]
 
-No user-facing changes since v1.4.9.
+No user-facing changes since v1.4.10.
+
+## [1.4.10] – 2026-05-28
+
+### Fixed
+- Auto-update installerte appen uten execute-bit på binærene: `zipfile.ZipFile.extractall()` bevarer ikke Unix-rettigheter fra ZIP. Byttet til `ditto -xk` for utpakking, som bevarer alle rettigheter korrekt.
 
 ## [1.4.9] – 2026-05-28
 
@@ -109,7 +114,8 @@ No user-facing changes since v1.4.9.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.9...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.10...HEAD
+[1.4.10]: https://github.com/gesm1s/txtmanager/compare/v1.4.9...v1.4.10
 [1.4.9]: https://github.com/gesm1s/txtmanager/compare/v1.4.8...v1.4.9
 [1.4.8]: https://github.com/gesm1s/txtmanager/compare/v1.4.7...v1.4.8
 [1.4.7]: https://github.com/gesm1s/txtmanager/compare/v1.4.6...v1.4.7

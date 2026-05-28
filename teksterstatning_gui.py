@@ -125,7 +125,7 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.9"
+APP_VERSION = "1.4.10"
 
 def _build_date():
     try:
@@ -636,7 +636,7 @@ class App(tk.Tk):
         x.bind("<Button-1>", lambda e: banner.destroy())
 
     def _auto_update(self, version, banner):
-        import urllib.request, zipfile, tempfile
+        import urllib.request, tempfile
 
         ZIP_URL = (f"https://github.com/gesm1s/txtmanager/releases"
                    f"/download/v{version}/Txtmanager.zip")
@@ -663,10 +663,12 @@ class App(tk.Tk):
                 urllib.request.urlretrieve(ZIP_URL, zip_path, _hook)
                 _set(t("update_extracting"))
 
-                with zipfile.ZipFile(zip_path) as zf:
-                    zf.extractall(tmp)
+                # ditto -xk preserves Unix permissions (execute bits); zipfile.extractall does not
+                extract_dir = os.path.join(tmp, "extracted")
+                os.makedirs(extract_dir)
+                subprocess.run(["ditto", "-xk", zip_path, extract_dir], check=True)
 
-                new_app = os.path.join(tmp, "Txtmanager.app")
+                new_app = os.path.join(extract_dir, "Txtmanager.app")
                 dest = "/Applications/Txtmanager.app"
                 _set(t("update_installing"))
                 subprocess.run(["rm", "-rf", dest], check=True)
