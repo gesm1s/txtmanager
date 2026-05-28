@@ -4,7 +4,13 @@ All notable changes to Txtmanager are documented here.
 
 ## [Unreleased]
 
-No user-facing changes since v1.4.8.
+No user-facing changes since v1.4.9.
+
+## [1.4.9] – 2026-05-28
+
+### Fixed
+- Revertering av snarveier etter iCloud-synk: XPC-synken gjorde remove+add ved phrase-oppdateringer, noe som skapte en ny UUID og utløste CloudKit-konflikt der telefon-versjonen (gammel verdi) vant. Endret til å bare bruke XPC for nye oppføringer og slettinger — phrase-oppdateringer propageres via keyboardservicesd sin fil-watch på DB-en, slik at UUID bevares og iCloud-konflikten unngås.
+- Retry-mekanismen brukte en utdatert snapshot av snarveiene. Hvis nye oppføringer var lagt til siden første forsøk, ville retryen fjerne dem fra keyboardservicesd. Retries henter nå alltid fersk data fra DB.
 
 ## [1.4.8] – 2026-05-27
 
@@ -103,7 +109,8 @@ No user-facing changes since v1.4.8.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.8...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.9...HEAD
+[1.4.9]: https://github.com/gesm1s/txtmanager/compare/v1.4.8...v1.4.9
 [1.4.8]: https://github.com/gesm1s/txtmanager/compare/v1.4.7...v1.4.8
 [1.4.7]: https://github.com/gesm1s/txtmanager/compare/v1.4.6...v1.4.7
 [1.4.6]: https://github.com/gesm1s/txtmanager/compare/v1.4.5...v1.4.6

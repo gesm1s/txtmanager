@@ -125,7 +125,7 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.8"
+APP_VERSION = "1.4.9"
 
 def _build_date():
     try:
@@ -341,20 +341,16 @@ current_entries = store.textReplacementEntries() or []
 to_add    = []
 to_remove = []
 
+existing_shortcuts = {e.shortcut() for e in current_entries}
+
 for entry in current_entries:
     sc = entry.shortcut()
-    if sc in desired:
-        if entry.phrase() != desired[sc]:
-            to_remove.append(entry)
-            new_entry = KSEntry.alloc().init()
-            new_entry.setShortcut_(sc)
-            new_entry.setPhrase_(desired[sc])
-            new_entry.setNeedsSaveToCloud_(True)
-            to_add.append(new_entry)
-    else:
+    if sc not in desired:
         to_remove.append(entry)
+    # Phrase updates are written directly to the DB; keyboardservicesd picks
+    # them up via file-watch. Doing remove+add here would create a new UUID,
+    # causing CloudKit conflicts when the old UUID is pushed back from other devices.
 
-existing_shortcuts = {e.shortcut() for e in current_entries}
 for sc, phrase in desired.items():
     if sc not in existing_shortcuts:
         new_entry = KSEntry.alloc().init()
@@ -406,7 +402,7 @@ except OSError: pass
                 with open(LOG_PATH, "a") as f:
                     f.write(f"{datetime.now().isoformat()} Retrying sync in {delay}s "
                             f"(attempt {_retry + 2}/4)...\n")
-                threading.Timer(delay, _sync_to_apps, args=(items,), kwargs={"_retry": _retry + 1}).start()
+                threading.Timer(delay, lambda r=_retry: _sync_to_apps(read_items(), _retry=r + 1)).start()
             else:
                 with open(LOG_PATH, "a") as f:
                     f.write(f"{datetime.now().isoformat()} All sync attempts failed — "
@@ -422,7 +418,7 @@ except OSError: pass
             delay = _SYNC_RETRY_DELAYS[_retry]
             with open(LOG_PATH, "a") as f:
                 f.write(f"{datetime.now().isoformat()} Retrying sync in {delay}s (attempt {_retry + 2}/4)...\n")
-            threading.Timer(delay, _sync_to_apps, args=(items,), kwargs={"_retry": _retry + 1}).start()
+            threading.Timer(delay, lambda r=_retry: _sync_to_apps(read_items(), _retry=r + 1)).start()
         else:
             with open(LOG_PATH, "a") as f:
                 f.write(f"{datetime.now().isoformat()} All sync attempts failed — giving up.\n")
