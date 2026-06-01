@@ -125,7 +125,7 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.12"
+APP_VERSION = "1.4.13"
 
 def _build_date():
     try:
@@ -678,8 +678,11 @@ class App(tk.Tk):
                 subprocess.run(["xattr", "-cr", dest], check=True)
 
                 _set(t("update_restarting"))
-                subprocess.Popen(["open", dest])
-                self.after(1500, lambda: os._exit(0))
+                # Use a detached shell with a delay so the old process has fully
+                # exited before the new instance is opened. -n forces a new instance
+                # even if the same bundle ID appears to still be running.
+                subprocess.Popen(["/bin/sh", "-c", f'sleep 3 && open -n "{dest}"'])
+                self.after(500, lambda: os._exit(0))
 
             except Exception as exc:
                 _set(t("update_error", e=exc))

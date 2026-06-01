@@ -4,7 +4,12 @@ All notable changes to Txtmanager are documented here.
 
 ## [Unreleased]
 
-No user-facing changes since v1.4.12.
+No user-facing changes since v1.4.13.
+
+## [1.4.13] – 2026-06-01
+
+### Fixed
+- Appen startet ikke opp igjen etter auto-oppdatering: `open <path>` uten `-n` bringer eksisterende instans i forgrunnen i stedet for å starte en ny, siden bundle ID allerede er registrert som kjørende. Byttet til en detached shell (`sleep 3 && open -n`) slik at ny instans åpnes etter at gammel prosess er ferdig avsluttet.
 
 ## [1.4.12] – 2026-06-01
 
@@ -126,7 +131,8 @@ No user-facing changes since v1.4.12.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.12...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.13...HEAD
+[1.4.13]: https://github.com/gesm1s/txtmanager/compare/v1.4.12...v1.4.13
 [1.4.12]: https://github.com/gesm1s/txtmanager/compare/v1.4.11...v1.4.12
 [1.4.11]: https://github.com/gesm1s/txtmanager/compare/v1.4.10...v1.4.11
 [1.4.10]: https://github.com/gesm1s/txtmanager/compare/v1.4.9...v1.4.10
