@@ -4,7 +4,13 @@ All notable changes to Txtmanager are documented here.
 
 ## [Unreleased]
 
-No user-facing changes since v1.4.13.
+No user-facing changes since v1.4.14.
+
+## [1.4.14] – 2026-06-01
+
+### Fixed
+- Snarveier reverserte til verdi fra telefon etter lagring: XPC-subprosessen manglet `NSApplication.sharedApplication()`, noe som hindret keyboardservicesd fra å levere XPC-svar. `textReplacementEntries()` returnerte alltid tom liste, og phrase-oppdateringer ble aldri pushet via XPC. Etter at iCloud-synk (file-watch) hentet telefon-verdien tilbake, vant den. Fikset ved å initialisere NSApplication i subprosessen og pushe phrase-oppdateringer via XPC ved å mutere eksisterende entry-objekt (UUID bevares → ingen CloudKit-konflikt).
+- Auto-restart etter oppdatering startet ikke ny instans: `subprocess.Popen` uten `start_new_session=True` lot shell-prosessen dø med parent. La til `start_new_session=True` slik at shell overlever `os._exit()`.
 
 ## [1.4.13] – 2026-06-01
 
@@ -131,7 +137,8 @@ No user-facing changes since v1.4.13.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.13...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.14...HEAD
+[1.4.14]: https://github.com/gesm1s/txtmanager/compare/v1.4.13...v1.4.14
 [1.4.13]: https://github.com/gesm1s/txtmanager/compare/v1.4.12...v1.4.13
 [1.4.12]: https://github.com/gesm1s/txtmanager/compare/v1.4.11...v1.4.12
 [1.4.11]: https://github.com/gesm1s/txtmanager/compare/v1.4.10...v1.4.11

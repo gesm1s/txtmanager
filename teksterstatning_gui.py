@@ -125,7 +125,7 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.13"
+APP_VERSION = "1.4.14"
 
 def _build_date():
     try:
@@ -302,8 +302,14 @@ with open(data_path, encoding="utf-8") as f:
     items = json.load(f)
 
 import objc
+import AppKit
 from Foundation import (NSUserDefaults, NSDistributedNotificationCenter,
                         NSRunLoop, NSDate)
+
+# XPC services require a running application context to deliver responses.
+# Without this, textReplacementEntries() returns empty and completion
+# callbacks are never called.
+AppKit.NSApplication.sharedApplication()
 
 objc.loadBundle('KeyboardServices',
     bundle_path='/System/Library/PrivateFrameworks/KeyboardServices.framework',
@@ -338,47 +344,52 @@ store = KSClientStore.alloc().init()
 desired = {i["replace"]: i["with"] for i in items}
 current_entries = store.textReplacementEntries() or []
 
-# If the XPC query returns nothing but the DB has entries, keyboardservicesd
-# is not accessible from this subprocess context. Skipping XPC step 2 entirely
-# to avoid adding all entries with fresh UUIDs (which causes CloudKit conflicts).
-# The DB write + keyboardservicesd file-watch handles propagation in this case.
-if not (desired and not current_entries):
-    to_add    = []
-    to_remove = []
+if desired and not current_entries:
+    # keyboardservicesd XPC is not accessible - DB file-watch will propagate.
+    print("XPC unavailable: no current entries returned", file=sys.stderr)
+    os._exit(1)
 
-    existing_shortcuts = {e.shortcut() for e in current_entries}
+to_add    = []
+to_remove = []
 
-    for entry in current_entries:
-        sc = entry.shortcut()
-        if sc not in desired:
-            to_remove.append(entry)
-        # Phrase updates propagate via keyboardservicesd file-watch on the DB.
-        # Doing remove+add creates a new UUID -> CloudKit conflict -> old device wins.
+entries_by_shortcut = {e.shortcut(): e for e in current_entries}
 
-    for sc, phrase in desired.items():
-        if sc not in existing_shortcuts:
-            new_entry = KSEntry.alloc().init()
-            new_entry.setShortcut_(sc)
-            new_entry.setPhrase_(phrase)
-            new_entry.setNeedsSaveToCloud_(True)
-            to_add.append(new_entry)
+for entry in current_entries:
+    sc = entry.shortcut()
+    if sc not in desired:
+        to_remove.append(entry)
+    elif entry.phrase() != desired[sc]:
+        # Mutate the existing entry object (preserves its UUID) so keyboardservicesd
+        # treats this as an update to the same CloudKit record, not a new one.
+        entry.setPhrase_(desired[sc])
+        entry.setNeedsSaveToCloud_(True)
+        to_add.append(entry)
+        to_remove.append(entry)
 
-    if to_add or to_remove:
-        done = [False]
-        def completion(err):
-            done[0] = True
+for sc, phrase in desired.items():
+    if sc not in entries_by_shortcut:
+        new_entry = KSEntry.alloc().init()
+        new_entry.setShortcut_(sc)
+        new_entry.setPhrase_(phrase)
+        new_entry.setNeedsSaveToCloud_(True)
+        to_add.append(new_entry)
 
-        store.addEntries_removeEntries_withCompletionHandler_(to_add, to_remove, completion)
+if to_add or to_remove:
+    done = [False]
+    def completion(err):
+        done[0] = True
 
-        deadline = time.time() + 5
-        while not done[0] and time.time() < deadline:
-            NSRunLoop.mainRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.1))
+    store.addEntries_removeEntries_withCompletionHandler_(to_add, to_remove, completion)
 
-        if not done[0]:
-            try: os.unlink(data_path)
-            except OSError: pass
-            print("XPC completion timed out - keyboardservicesd not ready", file=sys.stderr)
-            os._exit(1)
+    deadline = time.time() + 5
+    while not done[0] and time.time() < deadline:
+        NSRunLoop.mainRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.1))
+
+    if not done[0]:
+        try: os.unlink(data_path)
+        except OSError: pass
+        print("XPC completion timed out - keyboardservicesd not ready", file=sys.stderr)
+        os._exit(1)
 
 # --- Step 3: notify NSTextView apps (TextEdit) ---
 center = NSDistributedNotificationCenter.defaultCenter()
@@ -678,10 +689,13 @@ class App(tk.Tk):
                 subprocess.run(["xattr", "-cr", dest], check=True)
 
                 _set(t("update_restarting"))
-                # Use a detached shell with a delay so the old process has fully
-                # exited before the new instance is opened. -n forces a new instance
-                # even if the same bundle ID appears to still be running.
-                subprocess.Popen(["/bin/sh", "-c", f'sleep 3 && open -n "{dest}"'])
+                # start_new_session=True calls setsid() so the shell is fully
+                # detached and survives os._exit(). -n forces a new instance even
+                # if the old bundle ID is still visible to Launch Services.
+                subprocess.Popen(
+                    ["/bin/sh", "-c", f'sleep 3 && open -n "{dest}"'],
+                    start_new_session=True,
+                )
                 self.after(500, lambda: os._exit(0))
 
             except Exception as exc:

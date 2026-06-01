@@ -92,6 +92,15 @@ jobs:
           echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+      - name: Delete previous releases (keep only latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
+            | jq -r '.[].tagName' \
+            | grep -v "^${GITHUB_REF_NAME}$" \
+            | xargs -I{} gh release delete {} --repo "$GITHUB_REPOSITORY" --yes || true
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
