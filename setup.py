@@ -7,8 +7,8 @@ OPTIONS = {
         "CFBundleName": "Txtmanager",
         "CFBundleDisplayName": "Txtmanager",
         "CFBundleIdentifier": "com.gesm.txtmanager",
-        "CFBundleVersion": "1.4.11",
-        "CFBundleShortVersionString": "1.4.11",
+        "CFBundleVersion": "1.4.12",
+        "CFBundleShortVersionString": "1.4.12",
         "LSMinimumSystemVersion": "15.0",
     },
 }

@@ -4,7 +4,12 @@ All notable changes to Txtmanager are documented here.
 
 ## [Unreleased]
 
-No user-facing changes since v1.4.11.
+No user-facing changes since v1.4.12.
+
+## [1.4.12] – 2026-06-01
+
+### Fixed
+- Snarveier reverserte til gammel verdi etter lagring: `store.textReplacementEntries()` returnerer alltid tom liste fra subprocess-konteksten. Den tomme listen ble tolket som «keyboardservicesd ikke klar», exit 1 → alle retries feilet → `launchctl kickstart -k keyboardservicesd` kjørte. Den kickstarten trigget CloudKit-sync der telefonen sin gamle verdi vant. Fikset ved å hoppe over XPC step 2 når entries er tom (DB + file-watch propagerer endringen i stedet), og fjerne launchctl kickstart-fallbacken helt.
 
 ## [1.4.11] – 2026-06-01
 
@@ -121,7 +126,8 @@ No user-facing changes since v1.4.11.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.11...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.12...HEAD
+[1.4.12]: https://github.com/gesm1s/txtmanager/compare/v1.4.11...v1.4.12
 [1.4.11]: https://github.com/gesm1s/txtmanager/compare/v1.4.10...v1.4.11
 [1.4.10]: https://github.com/gesm1s/txtmanager/compare/v1.4.9...v1.4.10
 [1.4.9]: https://github.com/gesm1s/txtmanager/compare/v1.4.8...v1.4.9

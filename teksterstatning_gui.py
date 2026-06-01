@@ -125,7 +125,7 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.11"
+APP_VERSION = "1.4.12"
 
 def _build_date():
     try:
@@ -338,53 +338,47 @@ store = KSClientStore.alloc().init()
 desired = {i["replace"]: i["with"] for i in items}
 current_entries = store.textReplacementEntries() or []
 
-# Guard: if keyboardservicesd returns nothing but we have entries in the DB,
-# it is likely not ready yet (common right after login/app start).
-# Exit so the caller retries after a delay instead of adding all entries
-# with fresh UUIDs, which would trigger CloudKit conflicts.
-if desired and not current_entries:
-    try: os.unlink(data_path)
-    except OSError: pass
-    print("keyboardservicesd returned no entries - not ready yet", file=sys.stderr)
-    os._exit(1)
+# If the XPC query returns nothing but the DB has entries, keyboardservicesd
+# is not accessible from this subprocess context. Skipping XPC step 2 entirely
+# to avoid adding all entries with fresh UUIDs (which causes CloudKit conflicts).
+# The DB write + keyboardservicesd file-watch handles propagation in this case.
+if not (desired and not current_entries):
+    to_add    = []
+    to_remove = []
 
-to_add    = []
-to_remove = []
+    existing_shortcuts = {e.shortcut() for e in current_entries}
 
-existing_shortcuts = {e.shortcut() for e in current_entries}
+    for entry in current_entries:
+        sc = entry.shortcut()
+        if sc not in desired:
+            to_remove.append(entry)
+        # Phrase updates propagate via keyboardservicesd file-watch on the DB.
+        # Doing remove+add creates a new UUID -> CloudKit conflict -> old device wins.
 
-for entry in current_entries:
-    sc = entry.shortcut()
-    if sc not in desired:
-        to_remove.append(entry)
-    # Phrase updates are written directly to the DB; keyboardservicesd picks
-    # them up via file-watch. Doing remove+add here would create a new UUID,
-    # causing CloudKit conflicts when the old UUID is pushed back from other devices.
+    for sc, phrase in desired.items():
+        if sc not in existing_shortcuts:
+            new_entry = KSEntry.alloc().init()
+            new_entry.setShortcut_(sc)
+            new_entry.setPhrase_(phrase)
+            new_entry.setNeedsSaveToCloud_(True)
+            to_add.append(new_entry)
 
-for sc, phrase in desired.items():
-    if sc not in existing_shortcuts:
-        new_entry = KSEntry.alloc().init()
-        new_entry.setShortcut_(sc)
-        new_entry.setPhrase_(phrase)
-        new_entry.setNeedsSaveToCloud_(True)
-        to_add.append(new_entry)
+    if to_add or to_remove:
+        done = [False]
+        def completion(err):
+            done[0] = True
 
-if to_add or to_remove:
-    done = [False]
-    def completion(err):
-        done[0] = True
+        store.addEntries_removeEntries_withCompletionHandler_(to_add, to_remove, completion)
 
-    store.addEntries_removeEntries_withCompletionHandler_(to_add, to_remove, completion)
+        deadline = time.time() + 5
+        while not done[0] and time.time() < deadline:
+            NSRunLoop.mainRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.1))
 
-    deadline = time.time() + 5
-    while not done[0] and time.time() < deadline:
-        NSRunLoop.mainRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.1))
-
-    if not done[0]:
-        try: os.unlink(data_path)
-        except OSError: pass
-        print("XPC completion timed out - keyboardservicesd not ready", file=sys.stderr)
-        os._exit(1)
+        if not done[0]:
+            try: os.unlink(data_path)
+            except OSError: pass
+            print("XPC completion timed out - keyboardservicesd not ready", file=sys.stderr)
+            os._exit(1)
 
 # --- Step 3: notify NSTextView apps (TextEdit) ---
 center = NSDistributedNotificationCenter.defaultCenter()
@@ -415,12 +409,8 @@ except OSError: pass
                 threading.Timer(delay, lambda r=_retry: _sync_to_apps(read_items(), _retry=r + 1)).start()
             else:
                 with open(LOG_PATH, "a", encoding="utf-8") as f:
-                    f.write(f"{datetime.now().isoformat()} All sync attempts failed --"
-                            f" falling back to launchctl kickstart.\n")
-                uid = os.getuid()
-                subprocess.run(["launchctl", "kickstart", "-k",
-                                 f"gui/{uid}/com.apple.keyboardservicesd"],
-                               capture_output=True, timeout=5)
+                    f.write(f"{datetime.now().isoformat()} All XPC sync attempts failed --"
+                            f" DB write is the source of truth, file-watch will propagate.\n")
     except Exception as e:
         import traceback
         with open(LOG_PATH, "a", encoding="utf-8") as f:
