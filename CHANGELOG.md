@@ -4,7 +4,14 @@ All notable changes to Txtmanager are documented here.
 
 ## [Unreleased]
 
-No user-facing changes since v1.4.10.
+No user-facing changes since v1.4.11.
+
+## [1.4.11] – 2026-06-01
+
+### Fixed
+- Synk feilet alltid ved første oppdatering etter oppstart: `keyboardservicesd` er ikke klar umiddelbart ved oppstart, og `store.textReplacementEntries()` returnerer da en tom liste. Alle snarveier ble behandlet som nye → nye UUIDs → CloudKit-konflikt → revertering. Fikset med guard som avbryter og trigger retry hvis listen er tom men DB har oppføringer.
+- `UnicodeEncodeError` i logg-skriving skjulte den egentlige XPC-feilen: alle `open(LOG_PATH, "a")`-kall manglet `encoding="utf-8"`, slik at em-dash i fraser eller feilmeldinger kastet en ny exception inne i error-handleren. Alle logg-åpninger har nå eksplisitt UTF-8.
+- Exception-loggen viste bare feilmelding uten traceback, noe som gjorde feilsøking umulig. Logger nå full traceback ved exceptions.
 
 ## [1.4.10] – 2026-05-28
 
@@ -114,7 +121,8 @@ No user-facing changes since v1.4.10.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.10...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.11...HEAD
+[1.4.11]: https://github.com/gesm1s/txtmanager/compare/v1.4.10...v1.4.11
 [1.4.10]: https://github.com/gesm1s/txtmanager/compare/v1.4.9...v1.4.10
 [1.4.9]: https://github.com/gesm1s/txtmanager/compare/v1.4.8...v1.4.9
 [1.4.8]: https://github.com/gesm1s/txtmanager/compare/v1.4.7...v1.4.8

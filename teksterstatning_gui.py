@@ -125,7 +125,7 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.10"
+APP_VERSION = "1.4.11"
 
 def _build_date():
     try:
@@ -338,6 +338,16 @@ store = KSClientStore.alloc().init()
 desired = {i["replace"]: i["with"] for i in items}
 current_entries = store.textReplacementEntries() or []
 
+# Guard: if keyboardservicesd returns nothing but we have entries in the DB,
+# it is likely not ready yet (common right after login/app start).
+# Exit so the caller retries after a delay instead of adding all entries
+# with fresh UUIDs, which would trigger CloudKit conflicts.
+if desired and not current_entries:
+    try: os.unlink(data_path)
+    except OSError: pass
+    print("keyboardservicesd returned no entries - not ready yet", file=sys.stderr)
+    os._exit(1)
+
 to_add    = []
 to_remove = []
 
@@ -394,34 +404,36 @@ except OSError: pass
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if result.returncode != 0:
             stderr_text = result.stderr.decode(errors="replace").strip()
-            with open(LOG_PATH, "a") as f:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(f"{datetime.now().isoformat()} XPC sync script failed "
                         f"(exit {result.returncode}, attempt {_retry + 1}):\n{stderr_text}\n")
             if _retry < len(_SYNC_RETRY_DELAYS):
                 delay = _SYNC_RETRY_DELAYS[_retry]
-                with open(LOG_PATH, "a") as f:
+                with open(LOG_PATH, "a", encoding="utf-8") as f:
                     f.write(f"{datetime.now().isoformat()} Retrying sync in {delay}s "
                             f"(attempt {_retry + 2}/4)...\n")
                 threading.Timer(delay, lambda r=_retry: _sync_to_apps(read_items(), _retry=r + 1)).start()
             else:
-                with open(LOG_PATH, "a") as f:
-                    f.write(f"{datetime.now().isoformat()} All sync attempts failed — "
-                            f"falling back to launchctl kickstart.\n")
+                with open(LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now().isoformat()} All sync attempts failed --"
+                            f" falling back to launchctl kickstart.\n")
                 uid = os.getuid()
                 subprocess.run(["launchctl", "kickstart", "-k",
                                  f"gui/{uid}/com.apple.keyboardservicesd"],
                                capture_output=True, timeout=5)
     except Exception as e:
-        with open(LOG_PATH, "a") as f:
-            f.write(f"{datetime.now().isoformat()} EXCEPTION in _sync_to_apps (attempt {_retry + 1}): {e}\n")
+        import traceback
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat()} EXCEPTION in _sync_to_apps (attempt {_retry + 1}):\n")
+            traceback.print_exc(file=f)
         if _retry < len(_SYNC_RETRY_DELAYS):
             delay = _SYNC_RETRY_DELAYS[_retry]
-            with open(LOG_PATH, "a") as f:
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(f"{datetime.now().isoformat()} Retrying sync in {delay}s (attempt {_retry + 2}/4)...\n")
             threading.Timer(delay, lambda r=_retry: _sync_to_apps(read_items(), _retry=r + 1)).start()
         else:
-            with open(LOG_PATH, "a") as f:
-                f.write(f"{datetime.now().isoformat()} All sync attempts failed — giving up.\n")
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().isoformat()} All sync attempts failed -- giving up.\n")
 
 def find_repeated_tokens(items):
     patterns = [
