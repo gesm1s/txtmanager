@@ -268,25 +268,35 @@ def delete_item(pk):
     con.close()
     wal_checkpoint()
 
-def stop_keyboard_daemon():
+def stop_keyboard_daemon(ops=None):
     """Sync text replacements to all running apps.
-    Runs in a background thread to avoid blocking the GUI."""
+    ops: list of dicts describing the change, e.g.
+      {"op": "update", "old_shortcut": ..., "old_phrase": ..., "new_shortcut": ..., "new_phrase": ...}
+      {"op": "insert", "shortcut": ..., "phrase": ...}
+      {"op": "delete", "shortcut": ..., "phrase": ...}
+    When ops is provided, keyboardservicesd is updated directly via XPC without needing
+    to read current entries first."""
     items = read_items()
-    threading.Thread(target=_sync_to_apps, args=(items,), daemon=True).start()
+    threading.Thread(target=_sync_to_apps, args=(items, ops), daemon=True).start()
 
-_SYNC_RETRY_DELAYS = [10, 30, 60]
+_SYNC_RETRY_DELAYS = [10]
 
-def _sync_to_apps(items, _retry=0):
+def _sync_to_apps(items, ops=None, _retry=0):
     """Sync text replacements to all apps using the private KeyboardServices XPC API.
-    Replicates what System Settings does:
-    1. Push to keyboardservicesd via XPC -> updates Safari/Slack/Outlook immediately
-    2. Send NSSpellCheckerDidChangeAutomaticTextReplacementNotification -> updates TextEdit
-    Retries up to 3 times with increasing delay to handle race conditions at login
-    (keyboardservicesd may not be fully ready when the app auto-starts at boot)."""
+    ops: list of operation dicts (from stop_keyboard_daemon). When provided, keyboardservicesd
+    is updated directly via modifyEntry/addEntries without reading current state first.
+    Steps:
+    1. NSUserDefaults update -> updates TextEdit/NSTextView apps immediately
+    2. XPC op dispatch -> updates Safari/Slack/Outlook via keyboardservicesd
+    3. NSSpellChecker notification -> flushes TextEdit cache
+    Retries once after 10s if an XPC op times out (startup race condition)."""
     import json, tempfile
 
     try:
-        payload = [{"replace": i["shortcut"], "with": i["phrase"]} for i in items]
+        payload = {
+            "items": [{"replace": i["shortcut"], "with": i["phrase"]} for i in items],
+            "ops":   ops or []
+        }
         script_path = os.path.join(tempfile.gettempdir(), "txtmanager_ks_sync.py")
         data_path   = os.path.join(tempfile.gettempdir(), "txtmanager_notify.json")
 
@@ -299,27 +309,25 @@ import sys, json, time, os
 data_path = sys.argv[1]
 
 with open(data_path, encoding="utf-8") as f:
-    items = json.load(f)
+    data = json.load(f)
 
 import objc
 import AppKit
 from Foundation import (NSUserDefaults, NSDistributedNotificationCenter,
                         NSRunLoop, NSDate)
 
-# XPC services require a running application context to deliver responses.
-# Without this, textReplacementEntries() returns empty and completion
-# callbacks are never called.
 AppKit.NSApplication.sharedApplication()
 
-objc.loadBundle('KeyboardServices',
-    bundle_path='/System/Library/PrivateFrameworks/KeyboardServices.framework',
-    module_globals=globals())
-
-KSClientStore = objc.lookUpClass('_KSTextReplacementClientStore')
-KSEntry       = objc.lookUpClass('_KSTextReplacementEntry')
-
-# Register block signatures so PyObjC can wrap Python callables as Obj-C blocks
+# Register block metadata BEFORE loading the framework.
+# textReplacementEntries() always returns empty in subprocess context (no bundle-level
+# XPC trust), so we use op-based methods that don't require reading current state.
 _void_nsobj_block = {
+    'callable': {
+        'retval': {'type': b'v'},
+        'arguments': {0: {'type': b'@?'}, 1: {'type': b'@'}},
+    }
+}
+_modify_block = {
     'callable': {
         'retval': {'type': b'v'},
         'arguments': {0: {'type': b'@?'}, 1: {'type': b'@'}},
@@ -329,67 +337,82 @@ objc.registerMetaDataForSelector(
     b'_KSTextReplacementClientStore',
     b'addEntries:removeEntries:withCompletionHandler:',
     {'arguments': {4: _void_nsobj_block}})
+objc.registerMetaDataForSelector(
+    b'_KSTextReplacementClientStore',
+    b'modifyEntry:toEntry:withCompletionHandler:',
+    {'arguments': {4: _modify_block}})
+
+objc.loadBundle('KeyboardServices',
+    bundle_path='/System/Library/PrivateFrameworks/KeyboardServices.framework',
+    module_globals=globals())
+
+KSClientStore = objc.lookUpClass('_KSTextReplacementClientStore')
+KSEntry       = objc.lookUpClass('_KSTextReplacementEntry')
 
 # --- Step 1: update NSUserDictionaryReplacementItems plist (for TextEdit) ---
-entries_plist = [{"on": True, "replace": i["replace"], "with": i["with"]} for i in items]
+items_list    = data.get("items") or []
+entries_plist = [{"on": True, "replace": i["replace"], "with": i["with"]} for i in items_list]
 ud = NSUserDefaults.standardUserDefaults()
 gd = dict(ud.persistentDomainForName_("NSGlobalDomain") or {})
 gd["NSUserDictionaryReplacementItems"] = entries_plist
 ud.setPersistentDomain_forName_(gd, "NSGlobalDomain")
 ud.synchronize()
 
-# --- Step 2: push to keyboardservicesd via XPC (updates Safari/Slack/Outlook) ---
-store = KSClientStore.alloc().init()
+# --- Step 2: dispatch individual ops to keyboardservicesd via XPC ---
+store    = KSClientStore.alloc().init()
+ops      = data.get("ops") or []
+timed_out = []
 
-desired = {i["replace"]: i["with"] for i in items}
-current_entries = store.textReplacementEntries() or []
+for op in ops:
+    done    = [False]
+    err_val = [None]
 
-if desired and not current_entries:
-    # keyboardservicesd XPC is not accessible - DB file-watch will propagate.
-    print("XPC unavailable: no current entries returned", file=sys.stderr)
-    os._exit(1)
+    def _cb(err, _done=done, _err=err_val):
+        _err[0]  = err
+        _done[0] = True
 
-to_add    = []
-to_remove = []
+    op_type = op.get("op")
+    if op_type == "update":
+        old_e = KSEntry.alloc().init()
+        old_e.setShortcut_(op["old_shortcut"])
+        old_e.setPhrase_(op["old_phrase"])
+        new_e = KSEntry.alloc().init()
+        new_e.setShortcut_(op["new_shortcut"])
+        new_e.setPhrase_(op["new_phrase"])
+        new_e.setNeedsSaveToCloud_(True)
+        store.modifyEntry_toEntry_withCompletionHandler_(old_e, new_e, _cb)
 
-entries_by_shortcut = {e.shortcut(): e for e in current_entries}
-
-for entry in current_entries:
-    sc = entry.shortcut()
-    if sc not in desired:
-        to_remove.append(entry)
-    elif entry.phrase() != desired[sc]:
-        # Mutate the existing entry object (preserves its UUID) so keyboardservicesd
-        # treats this as an update to the same CloudKit record, not a new one.
-        entry.setPhrase_(desired[sc])
+    elif op_type == "insert":
+        entry = KSEntry.alloc().init()
+        entry.setShortcut_(op["shortcut"])
+        entry.setPhrase_(op["phrase"])
         entry.setNeedsSaveToCloud_(True)
-        to_add.append(entry)
-        to_remove.append(entry)
+        store.addEntries_removeEntries_withCompletionHandler_([entry], [], _cb)
 
-for sc, phrase in desired.items():
-    if sc not in entries_by_shortcut:
-        new_entry = KSEntry.alloc().init()
-        new_entry.setShortcut_(sc)
-        new_entry.setPhrase_(phrase)
-        new_entry.setNeedsSaveToCloud_(True)
-        to_add.append(new_entry)
+    elif op_type == "delete":
+        entry = KSEntry.alloc().init()
+        entry.setShortcut_(op["shortcut"])
+        entry.setPhrase_(op["phrase"])
+        store.addEntries_removeEntries_withCompletionHandler_([], [entry], _cb)
 
-if to_add or to_remove:
-    done = [False]
-    def completion(err):
-        done[0] = True
-
-    store.addEntries_removeEntries_withCompletionHandler_(to_add, to_remove, completion)
+    else:
+        done[0] = True  # unknown op type, skip
 
     deadline = time.time() + 5
     while not done[0] and time.time() < deadline:
         NSRunLoop.mainRunLoop().runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.1))
 
     if not done[0]:
-        try: os.unlink(data_path)
-        except OSError: pass
-        print("XPC completion timed out - keyboardservicesd not ready", file=sys.stderr)
-        os._exit(1)
+        timed_out.append(op.get("new_shortcut") or op.get("shortcut") or op_type)
+
+if timed_out:
+    print(f"XPC timed out for: {timed_out}", file=sys.stderr)
+    try: os.unlink(data_path)
+    except OSError: pass
+    os._exit(1)
+
+if not ops:
+    print("XPC step 2 skipped: no ops", file=sys.stderr)
 
 # --- Step 3: notify NSTextView apps (TextEdit) ---
 center = NSDistributedNotificationCenter.defaultCenter()
@@ -405,7 +428,8 @@ except OSError: pass
         clean_env["PYTHONUTF8"] = "1"
 
         result = subprocess.run(["/usr/bin/python3", script_path, data_path],
-                                timeout=15, env=clean_env,
+                                timeout=max(15, len(ops or []) * 6),
+                                env=clean_env,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if result.returncode != 0:
             stderr_text = result.stderr.decode(errors="replace").strip()
@@ -416,8 +440,9 @@ except OSError: pass
                 delay = _SYNC_RETRY_DELAYS[_retry]
                 with open(LOG_PATH, "a", encoding="utf-8") as f:
                     f.write(f"{datetime.now().isoformat()} Retrying sync in {delay}s "
-                            f"(attempt {_retry + 2}/4)...\n")
-                threading.Timer(delay, lambda r=_retry: _sync_to_apps(read_items(), _retry=r + 1)).start()
+                            f"(attempt {_retry + 2}/{len(_SYNC_RETRY_DELAYS) + 2})...\n")
+                threading.Timer(delay,
+                    lambda r=_retry, o=ops: _sync_to_apps(read_items(), o, _retry=r + 1)).start()
             else:
                 with open(LOG_PATH, "a", encoding="utf-8") as f:
                     f.write(f"{datetime.now().isoformat()} All XPC sync attempts failed --"
@@ -430,8 +455,10 @@ except OSError: pass
         if _retry < len(_SYNC_RETRY_DELAYS):
             delay = _SYNC_RETRY_DELAYS[_retry]
             with open(LOG_PATH, "a", encoding="utf-8") as f:
-                f.write(f"{datetime.now().isoformat()} Retrying sync in {delay}s (attempt {_retry + 2}/4)...\n")
-            threading.Timer(delay, lambda r=_retry: _sync_to_apps(read_items(), _retry=r + 1)).start()
+                f.write(f"{datetime.now().isoformat()} Retrying sync in {delay}s "
+                        f"(attempt {_retry + 2}/{len(_SYNC_RETRY_DELAYS) + 2})...\n")
+            threading.Timer(delay,
+                lambda r=_retry, o=ops: _sync_to_apps(read_items(), o, _retry=r + 1)).start()
         else:
             with open(LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(f"{datetime.now().isoformat()} All sync attempts failed -- giving up.\n")
@@ -975,6 +1002,10 @@ class App(tk.Tk):
             return
 
         affected = [i for i in self.items if token in i.get("phrase", "")]
+        ops = [{"op": "update",
+                "old_shortcut": i["shortcut"], "old_phrase": i["phrase"],
+                "new_shortcut": i["shortcut"], "new_phrase": i["phrase"].replace(token, new_val)}
+               for i in affected]
         backup()
         expected = []
         for item in affected:
@@ -982,7 +1013,7 @@ class App(tk.Tk):
             update_item(item["pk"], item["shortcut"], new_phrase)
             item["phrase"] = new_phrase
             expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
-        stop_keyboard_daemon()
+        stop_keyboard_daemon(ops=ops)
         self._verify_saved_rows(expected)
         self._refresh_table()
         self._refresh_tokens()
@@ -998,7 +1029,7 @@ class App(tk.Tk):
             return
         backup()
         insert_item(sc, ph)
-        stop_keyboard_daemon()
+        stop_keyboard_daemon(ops=[{"op": "insert", "shortcut": sc, "phrase": ph}])
         self._load()
         self._status(t("status_added", s=sc))
 
@@ -1021,7 +1052,11 @@ class App(tk.Tk):
             return
         backup()
         update_item(item["pk"], new_shortcut, dlg.result[1])
-        stop_keyboard_daemon()
+        stop_keyboard_daemon(ops=[{
+            "op": "update",
+            "old_shortcut": item["shortcut"], "old_phrase": item["phrase"],
+            "new_shortcut": new_shortcut,     "new_phrase": dlg.result[1]
+        }])
         self._verify_saved_rows([
             {"pk": item["pk"], "shortcut": new_shortcut, "phrase": dlg.result[1]}
         ])
@@ -1037,7 +1072,7 @@ class App(tk.Tk):
             return
         backup()
         delete_item(item["pk"])
-        stop_keyboard_daemon()
+        stop_keyboard_daemon(ops=[{"op": "delete", "shortcut": item["shortcut"], "phrase": item["phrase"]}])
         self._load()
         self._status(t("status_deleted", s=item["shortcut"]))
 
@@ -1114,6 +1149,10 @@ class App(tk.Tk):
             if not new_ver or new_ver == old_ver:
                 return
             affected = [i for i in self.items if old_ver in i.get("phrase", "")]
+            ops = [{"op": "update",
+                    "old_shortcut": i["shortcut"], "old_phrase": i["phrase"],
+                    "new_shortcut": i["shortcut"], "new_phrase": i["phrase"].replace(old_ver, new_ver)}
+                   for i in affected]
             backup()
             expected = []
             for item in affected:
@@ -1121,7 +1160,7 @@ class App(tk.Tk):
                 update_item(item["pk"], item["shortcut"], new_phrase)
                 item["phrase"] = new_phrase
                 expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
-            stop_keyboard_daemon()
+            stop_keyboard_daemon(ops=ops)
             self._verify_saved_rows(expected)
             self._refresh_table()
             self._refresh_tokens()
@@ -1182,13 +1221,17 @@ class App(tk.Tk):
             if not affected:
                 messagebox.showinfo(t("err_no_match_title"), t("err_no_match", f=f))
                 return
+            ops = [{"op": "update",
+                    "old_shortcut": item["shortcut"], "old_phrase": item["phrase"],
+                    "new_shortcut": item["shortcut"], "new_phrase": item["phrase"].replace(f, r)}
+                   for item in affected]
             backup()
             expected = []
             for item in affected:
                 new_phrase = item["phrase"].replace(f, r)
                 update_item(item["pk"], item["shortcut"], new_phrase)
                 expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
-            stop_keyboard_daemon()
+            stop_keyboard_daemon(ops=ops)
             self._verify_saved_rows(expected)
             self._load()
             self._status(t("status_findreplace", n=len(affected)))
