@@ -6,6 +6,8 @@ All notable changes to Txtmanager are documented here.
 
 ### Fixed
 - Snarveier viste gammel verdi (fra mange dager siden) i Slack/Safari etter lagring: rotårsak var at `textReplacementEntries()` alltid returnerer tom liste i subprocess-konteksten, uavhengig av `NSApplication`-fix i v1.4.14. keyboardservicesd skriver aktivt tilbake sin in-memory-tilstand (synkronisert med CloudKit fra telefonen) til WAL-filen og overskriver DB-endringer gjort av TxtManager. Løsning: XPC-synken bruker nå op-baserte metoder (`modifyEntry:toEntry:withCompletionHandler:` for oppdateringer, `addEntries:removeEntries:withCompletionHandler:` for insert/slett) som oppdaterer keyboardserviceds in-memory-tilstand direkte uten å lese gjeldende entries først. Alle call sites sender nå gammel/ny verdi som `ops`-liste til `stop_keyboard_daemon`. Dette stopper også reverteringen siden keyboardservicesd nå setter `ZNEEDSSAVETOCLOUD=1` og synker den riktige verdien til CloudKit.
+- Auto-oppdatering viste feil versjonsnummer etter restart: `APP_VERSION` var hardkodet i kildefilen og ble ikke oppdatert ved versjonsbump. Løst ved å lese versjon fra bundle-ens `Info.plist` ved kjøring som fryst app — `setup.py` er nå eneste kilde til versjonsnummeret.
+- Auto-oppdatering åpnet gammel versjon etter restart: Launch Services cacher bundle-registreringen og `open -n` plukket opp gammel binary. Fikset ved å kjøre `lsregister -f` på den erstattede app-bundlen før `open -n`.
 
 ## [1.4.14] – 2026-06-01
 
