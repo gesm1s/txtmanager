@@ -125,7 +125,20 @@ def t(key, **kwargs):
     text = T[key][LANG]
     return text.format(**kwargs) if kwargs else text
 
-APP_VERSION = "1.4.14"
+def _app_version():
+    if getattr(sys, "frozen", False):
+        try:
+            import plistlib
+            plist_path = os.path.join(
+                os.path.dirname(sys.executable), "..", "Info.plist"
+            )
+            with open(plist_path, "rb") as f:
+                return plistlib.load(f).get("CFBundleShortVersionString", "1.4.15")
+        except Exception:
+            pass
+    return "1.4.15"
+
+APP_VERSION = _app_version()
 
 def _build_date():
     try:
@@ -716,11 +729,17 @@ class App(tk.Tk):
                 subprocess.run(["xattr", "-cr", dest], check=True)
 
                 _set(t("update_restarting"))
-                # start_new_session=True calls setsid() so the shell is fully
-                # detached and survives os._exit(). -n forces a new instance even
-                # if the old bundle ID is still visible to Launch Services.
+                # lsregister -f flushes the Launch Services cache for the replaced bundle
+                # so open -n picks up the new binary, not a stale cached registration.
+                # start_new_session=True (setsid) detaches the shell so it survives os._exit().
+                _lsreg = (
+                    "/System/Library/Frameworks/CoreServices.framework"
+                    "/Versions/A/Frameworks/LaunchServices.framework"
+                    "/Versions/A/Support/lsregister"
+                )
                 subprocess.Popen(
-                    ["/bin/sh", "-c", f'sleep 3 && open -n "{dest}"'],
+                    ["/bin/sh", "-c",
+                     f'sleep 2 && "{_lsreg}" -f "{dest}" && open -n "{dest}"'],
                     start_new_session=True,
                 )
                 self.after(500, lambda: os._exit(0))
