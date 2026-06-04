@@ -116,10 +116,10 @@ To handle both, TxtManager:
 
 1. **Writes to the SQLite database** (source of truth for all storage and iCloud sync)
 2. **Updates `NSUserDictionaryReplacementItems`** and sends `NSSpellCheckerDidChangeAutomaticTextReplacementNotification` (for TextEdit and similar apps)
-3. **Calls the private `_KSTextReplacementClientStore` XPC API** from `KeyboardServices.framework` — the same API used internally by System Settings — to push changes directly to `keyboardservicesd`, which immediately notifies Safari, Slack, Outlook and other XPC-connected apps
+3. **Calls the private `_KSTextReplacementClientStore` XPC API** from `KeyboardServices.framework` — the same API used internally by System Settings — to push changes directly to `keyboardservicesd`, which immediately notifies Safari, Slack, Outlook and other XPC-connected apps. Each operation is dispatched as a typed XPC call: `modifyEntry:toEntry:withCompletionHandler:` for edits (matched on shortcut + phrase), `addEntries:removeEntries:` for inserts and deletions. This updates keyboardservicesd's in-memory state directly without reading current entries first, which avoids the conflict where keyboardservicesd's CloudKit-backed state would otherwise overwrite the DB write within seconds.
 
 > **Why not just restart `keyboardservicesd`?**
-> Earlier versions of TxtManager restarted the `keyboardservicesd` daemon after a DB write. This worked initially but broke in later macOS 15.x/26 updates: restarting the daemon causes it to re-sync from iCloud (CloudKit), which can overwrite local changes with stale values from other devices. It also disrupts XPC connections in running apps, causing reconnect delays of several minutes. Using the official XPC client API avoids all of these issues.
+> Earlier versions of TxtManager restarted the `keyboardservicesd` daemon after a DB write. This worked initially but broke in later macOS 15.x/26 updates: restarting the daemon causes it to re-sync from iCloud (CloudKit), which can overwrite local changes with stale values from other devices. It also disrupts XPC connections in running apps, causing reconnect delays of several minutes. Using the op-based XPC client API avoids all of these issues.
 
 ### Database schema
 
@@ -185,7 +185,7 @@ The log file is only created when an error occurs. If it does not exist, sync is
 cat ~/Library/Logs/TxtManager.log
 ```
 
-If the XPC call fails, TxtManager automatically falls back to restarting `keyboardservicesd` via `launchctl kickstart`.
+If an XPC operation times out, TxtManager retries once after 10 seconds. If that also fails, the DB write remains the source of truth and keyboardservicesd will eventually pick up the change via its own file-watch mechanism.
 
 ---
 
