@@ -2,8 +2,6 @@ name: Build Txtmanager
 
 on:
   push:
-    tags:
-      - 'v*'
     branches:
       - main
     paths:
@@ -19,17 +17,24 @@ jobs:
     runs-on: macos-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: ver
+        run: |
+          VERSION=$(grep -o '"CFBundleVersion": "[0-9.]*"' setup.py | grep -o '[0-9.]*')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: |
-          pip install py2app
+        run: pip install py2app
 
       - name: Build app
         run: python3 setup.py py2app
@@ -57,7 +62,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
@@ -72,8 +76,8 @@ jobs:
       - name: Extract release notes from CHANGELOG
         id: notes
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${GITHUB_REF_NAME}$" | head -1)
+          VERSION="${{ needs.build-mac.outputs.version }}"
+          PREV_TAG=$(git tag --sort=-version:refname | head -1)
 
           BODY=$(awk "
             /^## \[${VERSION}\]/{found=1; next}
@@ -89,20 +93,25 @@ jobs:
           echo "body<<EOF" >> $GITHUB_OUTPUT
           echo "$BODY" >> $GITHUB_OUTPUT
           echo "" >> $GITHUB_OUTPUT
-          echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          if [ -n "$PREV_TAG" ]; then
+            echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...v${VERSION}" >> $GITHUB_OUTPUT
+          fi
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Delete previous releases (keep only latest)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          TAG="v${{ needs.build-mac.outputs.version }}"
           gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
             | jq -r '.[].tagName' \
-            | grep -v "^${GITHUB_REF_NAME}$" \
-            | xargs -I{} gh release delete {} --repo "$GITHUB_REPOSITORY" --yes || true
+            | grep -v "^${TAG}$" \
+            | xargs -I{} gh release delete {} --repo "$GITHUB_REPOSITORY" --yes --delete-tag || true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.build-mac.outputs.version }}
           files: artifacts/Txtmanager-mac/Txtmanager.zip
           body: ${{ steps.notes.outputs.body }}
+          make_latest: true

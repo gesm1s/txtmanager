@@ -2,7 +2,7 @@
 
 All notable changes to Txtmanager are documented here.
 
-## [Unreleased]
+## [1.4.15] – 2026-06-04
 
 ### Fixed
 - Snarveier viste gammel verdi (fra mange dager siden) i Slack/Safari etter lagring: rotårsak var at `textReplacementEntries()` alltid returnerer tom liste i subprocess-konteksten, uavhengig av `NSApplication`-fix i v1.4.14. keyboardservicesd skriver aktivt tilbake sin in-memory-tilstand (synkronisert med CloudKit fra telefonen) til WAL-filen og overskriver DB-endringer gjort av TxtManager. Løsning: XPC-synken bruker nå op-baserte metoder (`modifyEntry:toEntry:withCompletionHandler:` for oppdateringer, `addEntries:removeEntries:withCompletionHandler:` for insert/slett) som oppdaterer keyboardserviceds in-memory-tilstand direkte uten å lese gjeldende entries først. Alle call sites sender nå gammel/ny verdi som `ops`-liste til `stop_keyboard_daemon`. Dette stopper også reverteringen siden keyboardservicesd nå setter `ZNEEDSSAVETOCLOUD=1` og synker den riktige verdien til CloudKit.
@@ -138,7 +138,8 @@ All notable changes to Txtmanager are documented here.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.14...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.15...HEAD
+[1.4.15]: https://github.com/gesm1s/txtmanager/compare/v1.4.14...v1.4.15
 [1.4.14]: https://github.com/gesm1s/txtmanager/compare/v1.4.13...v1.4.14
 [1.4.13]: https://github.com/gesm1s/txtmanager/compare/v1.4.12...v1.4.13
 [1.4.12]: https://github.com/gesm1s/txtmanager/compare/v1.4.11...v1.4.12
