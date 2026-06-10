@@ -2,6 +2,11 @@
 
 All notable changes to Txtmanager are documented here.
 
+## [Unreleased]
+
+### Changed
+- La til roterende fil-logging for backup, versjonsbump, DB-oppdateringer, XPC-sync og forsinket lagringsverifisering. Dette gjør det enklere å se om `keyboardservicesd`/CloudKit skriver en snarvei tilbake etter at TxtManager først lagret riktig verdi.
+
 ## [1.4.15] – 2026-06-04
 
 ### Fixed

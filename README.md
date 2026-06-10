@@ -173,19 +173,28 @@ At most **10 backups** are kept — older ones are deleted automatically.
 
 ## Logging
 
-If the XPC sync to running apps fails, errors are written to:
+TxtManager writes its operational log to:
 
 ```
 ~/Library/Logs/TxtManager.log
 ```
 
-The log file is only created when an error occurs. If it does not exist, sync is working correctly. You can view it in **Console.app** (search for "TxtManager") or in Terminal:
+The log includes backup creation, version bump requests, DB updates, XPC sync attempts/results, and immediate/delayed save verification. This makes it easier to diagnose cases where the SQLite database is correct but `keyboardservicesd`, CloudKit, or a running app temporarily keeps an older replacement in memory. The file rotates automatically when it grows.
+
+You can view it in **Console.app** (search for "TxtManager") or in Terminal:
 
 ```bash
 cat ~/Library/Logs/TxtManager.log
 ```
 
 If an XPC operation times out, TxtManager retries once after 10 seconds. If that also fails, the DB write remains the source of truth and keyboardservicesd will eventually pick up the change via its own file-watch mechanism.
+
+If the app itself crashes, macOS writes crash reports under:
+
+```
+~/Library/Logs/DiagnosticReports/Txtmanager_*.crash
+~/Library/Logs/DiagnosticReports/Txtmanager_*.ips
+```
 
 ---
 

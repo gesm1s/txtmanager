@@ -7,9 +7,10 @@ TxtManager 1.4.8 for macOS 15+/26
 - Bilingual: Norwegian / English (follows macOS language setting)
 """
 
-import sys, sqlite3, time, uuid, subprocess, os, re, shutil, locale, threading
+import sys, sqlite3, time, uuid, subprocess, os, re, shutil, locale, threading, logging
 from collections import Counter
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -189,14 +190,71 @@ DB_PATH     = os.path.expanduser("~/Library/KeyboardServices/TextReplacements.db
 BACKUP_DIR  = os.path.expanduser("~/Library/Application Support/TxtManager/backups")
 BACKUP_KEEP = 10
 LOG_PATH    = os.path.expanduser("~/Library/Logs/TxtManager.log")
+LOG_MAX_BYTES = 512 * 1024
+LOG_BACKUP_COUNT = 3
 CD_EPOCH = 978307200
 MIN_OCCURRENCES = 2
+
+def _setup_logger():
+    logger = logging.getLogger("TxtManager")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if logger.handlers:
+        return logger
+    try:
+        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
+        handler = RotatingFileHandler(
+            LOG_PATH,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+    except OSError:
+        logger.addHandler(logging.NullHandler())
+    return logger
+
+LOGGER = _setup_logger()
+VERSION_TOKEN_RE = re.compile(r"\d+\.\d+(?:\.\d+)*")
+
+def _summarize_shortcuts(rows, limit=20):
+    shortcuts = [str(row.get("shortcut") or "?") for row in rows]
+    shown = shortcuts[:limit]
+    extra = len(shortcuts) - len(shown)
+    suffix = f", +{extra} more" if extra > 0 else ""
+    return ", ".join(shown) + suffix
+
+def _summarize_ops(ops, limit=20):
+    shortcuts = [
+        str(op.get("new_shortcut") or op.get("shortcut") or op.get("old_shortcut") or op.get("op") or "?")
+        for op in ops
+    ]
+    shown = shortcuts[:limit]
+    extra = len(shortcuts) - len(shown)
+    suffix = f", +{extra} more" if extra > 0 else ""
+    return ", ".join(shown) + suffix
+
+def _phrase_versions(phrase):
+    versions = VERSION_TOKEN_RE.findall(phrase or "")
+    return ",".join(versions) if versions else "-"
+
+def _row_debug_summary(row):
+    if not row:
+        return "missing"
+    return (
+        f"pk={row.get('pk')} shortcut={row.get('shortcut')} "
+        f"versions={_phrase_versions(row.get('phrase'))} "
+        f"phrase_len={len(row.get('phrase') or '')}"
+    )
 
 # ── Backend ────────────────────────────────────────────────────────────────────
 def backup():
     os.makedirs(BACKUP_DIR, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    shutil.copy2(DB_PATH, os.path.join(BACKUP_DIR, f"TextReplacements.db.backup_{ts}"))
+    backup_path = os.path.join(BACKUP_DIR, f"TextReplacements.db.backup_{ts}")
+    shutil.copy2(DB_PATH, backup_path)
+    LOGGER.info("Backup created: %s", backup_path)
     # Keep only the most recent BACKUP_KEEP backups
     existing = sorted(
         [f for f in os.listdir(BACKUP_DIR) if f.startswith("TextReplacements.db.backup_")],
@@ -205,8 +263,9 @@ def backup():
     for old in existing[BACKUP_KEEP:]:
         try:
             os.remove(os.path.join(BACKUP_DIR, old))
-        except OSError:
-            pass
+            LOGGER.info("Removed old backup: %s", old)
+        except OSError as exc:
+            LOGGER.warning("Could not remove old backup %s: %s", old, exc)
 
 def get_conn():
     con = sqlite3.connect(DB_PATH, timeout=10)
@@ -261,6 +320,7 @@ def insert_item(shortcut, phrase):
     con.commit()
     con.close()
     wal_checkpoint()
+    LOGGER.info("Inserted shortcut: pk=%s shortcut=%s versions=%s", pk, shortcut, _phrase_versions(phrase))
 
 def update_item(pk, shortcut, phrase):
     con = get_conn()
@@ -273,6 +333,7 @@ def update_item(pk, shortcut, phrase):
     con.commit()
     con.close()
     wal_checkpoint()
+    LOGGER.info("Updated shortcut: pk=%s shortcut=%s versions=%s", pk, shortcut, _phrase_versions(phrase))
 
 def delete_item(pk):
     con = get_conn()
@@ -280,6 +341,7 @@ def delete_item(pk):
     con.commit()
     con.close()
     wal_checkpoint()
+    LOGGER.info("Deleted shortcut: pk=%s", pk)
 
 def stop_keyboard_daemon(ops=None):
     """Sync text replacements to all running apps.
@@ -290,6 +352,12 @@ def stop_keyboard_daemon(ops=None):
     When ops is provided, keyboardservicesd is updated directly via XPC without needing
     to read current entries first."""
     items = read_items()
+    op_list = ops or []
+    op_types = dict(Counter(op.get("op", "unknown") for op in op_list))
+    LOGGER.info(
+        "Sync requested: items=%s ops=%s op_types=%s shortcuts=%s",
+        len(items), len(op_list), op_types, _summarize_ops(op_list),
+    )
     threading.Thread(target=_sync_to_apps, args=(items, ops), daemon=True).start()
 
 _SYNC_RETRY_DELAYS = [10]
@@ -446,35 +514,47 @@ except OSError: pass
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if result.returncode != 0:
             stderr_text = result.stderr.decode(errors="replace").strip()
-            with open(LOG_PATH, "a", encoding="utf-8") as f:
-                f.write(f"{datetime.now().isoformat()} XPC sync script failed "
-                        f"(exit {result.returncode}, attempt {_retry + 1}):\n{stderr_text}\n")
+            LOGGER.error(
+                "XPC sync script failed (exit %s, attempt %s):\n%s",
+                result.returncode, _retry + 1, stderr_text,
+            )
             if _retry < len(_SYNC_RETRY_DELAYS):
                 delay = _SYNC_RETRY_DELAYS[_retry]
-                with open(LOG_PATH, "a", encoding="utf-8") as f:
-                    f.write(f"{datetime.now().isoformat()} Retrying sync in {delay}s "
-                            f"(attempt {_retry + 2}/{len(_SYNC_RETRY_DELAYS) + 2})...\n")
-                threading.Timer(delay,
-                    lambda r=_retry, o=ops: _sync_to_apps(read_items(), o, _retry=r + 1)).start()
+                LOGGER.info(
+                    "Retrying sync in %ss (attempt %s/%s)",
+                    delay, _retry + 2, len(_SYNC_RETRY_DELAYS) + 2,
+                )
+                timer = threading.Timer(
+                    delay,
+                    lambda r=_retry, o=ops: _sync_to_apps(read_items(), o, _retry=r + 1),
+                )
+                timer.daemon = True
+                timer.start()
             else:
-                with open(LOG_PATH, "a", encoding="utf-8") as f:
-                    f.write(f"{datetime.now().isoformat()} All XPC sync attempts failed --"
-                            f" DB write is the source of truth, file-watch will propagate.\n")
-    except Exception as e:
-        import traceback
-        with open(LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(f"{datetime.now().isoformat()} EXCEPTION in _sync_to_apps (attempt {_retry + 1}):\n")
-            traceback.print_exc(file=f)
+                LOGGER.error(
+                    "All XPC sync attempts failed -- DB write is the source of truth, file-watch will propagate."
+                )
+        else:
+            LOGGER.info(
+                "XPC sync completed: attempt=%s items=%s ops=%s shortcuts=%s",
+                _retry + 1, len(items), len(ops or []), _summarize_ops(ops or []),
+            )
+    except Exception:
+        LOGGER.exception("EXCEPTION in _sync_to_apps (attempt %s)", _retry + 1)
         if _retry < len(_SYNC_RETRY_DELAYS):
             delay = _SYNC_RETRY_DELAYS[_retry]
-            with open(LOG_PATH, "a", encoding="utf-8") as f:
-                f.write(f"{datetime.now().isoformat()} Retrying sync in {delay}s "
-                        f"(attempt {_retry + 2}/{len(_SYNC_RETRY_DELAYS) + 2})...\n")
-            threading.Timer(delay,
-                lambda r=_retry, o=ops: _sync_to_apps(read_items(), o, _retry=r + 1)).start()
+            LOGGER.info(
+                "Retrying sync in %ss (attempt %s/%s)",
+                delay, _retry + 2, len(_SYNC_RETRY_DELAYS) + 2,
+            )
+            timer = threading.Timer(
+                delay,
+                lambda r=_retry, o=ops: _sync_to_apps(read_items(), o, _retry=r + 1),
+            )
+            timer.daemon = True
+            timer.start()
         else:
-            with open(LOG_PATH, "a", encoding="utf-8") as f:
-                f.write(f"{datetime.now().isoformat()} All sync attempts failed -- giving up.\n")
+            LOGGER.error("All sync attempts failed -- giving up.")
 
 def find_repeated_tokens(items):
     patterns = [
@@ -972,23 +1052,57 @@ class App(tk.Tk):
     def _status(self, msg):
         self.status_var.set(msg)
 
-    def _verify_saved_rows(self, expected_rows, retries=3, delay=0.3):
+    def _verify_saved_rows(self, expected_rows, retries=3, delay=0.3,
+                           delayed_checks=(10, 60), context="save"):
         """Non-blocking verification in background thread."""
+        warned = [False]
+
+        def _find_mismatch():
+            for exp in expected_rows:
+                current = read_item_by_pk(exp["pk"])
+                if not current:
+                    return f"expected={_row_debug_summary(exp)} current=missing"
+                if current["shortcut"] != exp["shortcut"] or current["phrase"] != exp["phrase"]:
+                    return f"expected={_row_debug_summary(exp)} current={_row_debug_summary(current)}"
+            return None
+
+        def _warn_once():
+            if warned[0]:
+                return
+            warned[0] = True
+            self.after(0, lambda: messagebox.showwarning(t("warn_sync_title"), t("warn_sync_msg")))
+
+        def _schedule_delayed_checks():
+            for check_delay in delayed_checks:
+                timer = threading.Timer(check_delay, _delayed_check, args=(check_delay,))
+                timer.daemon = True
+                timer.start()
+
+        def _delayed_check(check_delay):
+            mismatch = _find_mismatch()
+            if mismatch:
+                LOGGER.warning(
+                    "Delayed save verification mismatch after %ss (%s): %s",
+                    check_delay, context, mismatch,
+                )
+                _warn_once()
+            else:
+                LOGGER.info(
+                    "Delayed save verification OK after %ss (%s): rows=%s",
+                    check_delay, context, len(expected_rows),
+                )
+
         def _check():
             for _ in range(retries):
                 time.sleep(delay)
-                all_ok = True
-                for exp in expected_rows:
-                    current = read_item_by_pk(exp["pk"])
-                    if not current:
-                        all_ok = False
-                        break
-                    if current["shortcut"] != exp["shortcut"] or current["phrase"] != exp["phrase"]:
-                        all_ok = False
-                        break
-                if all_ok:
+                mismatch = _find_mismatch()
+                if not mismatch:
+                    LOGGER.info("Immediate save verification OK (%s): rows=%s", context, len(expected_rows))
+                    _schedule_delayed_checks()
                     return
-            self.after(0, lambda: messagebox.showwarning(t("warn_sync_title"), t("warn_sync_msg")))
+            LOGGER.warning("Immediate save verification mismatch (%s): %s", context, mismatch)
+            _warn_once()
+
         threading.Thread(target=_check, daemon=True).start()
 
     def _selected_item(self):
@@ -1021,6 +1135,10 @@ class App(tk.Tk):
             return
 
         affected = [i for i in self.items if token in i.get("phrase", "")]
+        LOGGER.info(
+            "Token replace requested: token_versions=%s new_versions=%s affected=%s shortcuts=%s",
+            _phrase_versions(token), _phrase_versions(new_val), len(affected), _summarize_shortcuts(affected),
+        )
         ops = [{"op": "update",
                 "old_shortcut": i["shortcut"], "old_phrase": i["phrase"],
                 "new_shortcut": i["shortcut"], "new_phrase": i["phrase"].replace(token, new_val)}
@@ -1033,7 +1151,7 @@ class App(tk.Tk):
             item["phrase"] = new_phrase
             expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
         stop_keyboard_daemon(ops=ops)
-        self._verify_saved_rows(expected)
+        self._verify_saved_rows(expected, context=f"token replace {token} to {new_val}")
         self._refresh_table()
         self._refresh_tokens()
         self._status(t("status_replaced", a=token, b=new_val, n=len(affected)))
@@ -1078,7 +1196,7 @@ class App(tk.Tk):
         }])
         self._verify_saved_rows([
             {"pk": item["pk"], "shortcut": new_shortcut, "phrase": dlg.result[1]}
-        ])
+        ], context=f"edit {new_shortcut}")
         self._load()
         self._status(t("status_edited", s=item["shortcut"]))
 
@@ -1168,6 +1286,10 @@ class App(tk.Tk):
             if not new_ver or new_ver == old_ver:
                 return
             affected = [i for i in self.items if old_ver in i.get("phrase", "")]
+            LOGGER.info(
+                "Version bump requested: old=%s new=%s affected=%s shortcuts=%s",
+                old_ver, new_ver, len(affected), _summarize_shortcuts(affected),
+            )
             ops = [{"op": "update",
                     "old_shortcut": i["shortcut"], "old_phrase": i["phrase"],
                     "new_shortcut": i["shortcut"], "new_phrase": i["phrase"].replace(old_ver, new_ver)}
@@ -1180,10 +1302,11 @@ class App(tk.Tk):
                 item["phrase"] = new_phrase
                 expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
             stop_keyboard_daemon(ops=ops)
-            self._verify_saved_rows(expected)
+            self._verify_saved_rows(expected, context=f"version bump {old_ver} to {new_ver}")
             self._refresh_table()
             self._refresh_tokens()
             self._status(t("vb_done", a=old_ver, b=new_ver, n=len(affected)))
+            LOGGER.info("Version bump applied: old=%s new=%s affected=%s", old_ver, new_ver, len(affected))
             win.destroy()
 
         new_entry.bind("<Return>", lambda _: do_bump())
@@ -1240,6 +1363,10 @@ class App(tk.Tk):
             if not affected:
                 messagebox.showinfo(t("err_no_match_title"), t("err_no_match", f=f))
                 return
+            LOGGER.info(
+                "Find/replace requested: find_versions=%s replace_versions=%s affected=%s shortcuts=%s",
+                _phrase_versions(f), _phrase_versions(r), len(affected), _summarize_shortcuts(affected),
+            )
             ops = [{"op": "update",
                     "old_shortcut": item["shortcut"], "old_phrase": item["phrase"],
                     "new_shortcut": item["shortcut"], "new_phrase": item["phrase"].replace(f, r)}
@@ -1251,7 +1378,7 @@ class App(tk.Tk):
                 update_item(item["pk"], item["shortcut"], new_phrase)
                 expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
             stop_keyboard_daemon(ops=ops)
-            self._verify_saved_rows(expected)
+            self._verify_saved_rows(expected, context="find replace")
             self._load()
             self._status(t("status_findreplace", n=len(affected)))
             self.search_var.set(original_query)
