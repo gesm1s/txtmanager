@@ -2,10 +2,11 @@
 
 All notable changes to Txtmanager are documented here.
 
-## [Unreleased]
+## [1.4.16] – 2026-06-10
 
 ### Changed
 - La til roterende fil-logging for backup, versjonsbump, DB-oppdateringer, XPC-sync og forsinket lagringsverifisering. Dette gjør det enklere å se om `keyboardservicesd`/CloudKit skriver en snarvei tilbake etter at TxtManager først lagret riktig verdi.
+- Workflowen stopper nå hvis en Python-endring prøver å publisere en versjon som allerede er releaset, slik at nye Python-endringer må få ny appversjon og ny GitHub-release i stedet for å overskrive en gammel release.
 
 ## [1.4.15] – 2026-06-04
 

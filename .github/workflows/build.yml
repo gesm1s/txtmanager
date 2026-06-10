@@ -5,7 +5,9 @@ on:
     branches:
       - main
     paths:
-      - 'teksterstatning_gui.py'
+      - '*.py'
+      - '**/*.py'
+      - '.github/workflows/build.yml'
       - 'setup.py'
       - 'entitlements.plist'
       - 'requirements.txt'
@@ -22,12 +24,22 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Extract version
         id: ver
         run: |
           VERSION=$(grep -o '"CFBundleVersion": "[0-9.]*"' setup.py | grep -o '[0-9.]*')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Ensure version has not been released
+        run: |
+          TAG="v${{ steps.ver.outputs.version }}"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error title=Version already released::${TAG} already exists. Bump CFBundleVersion and CFBundleShortVersionString in setup.py, then add a matching CHANGELOG entry."
+            exit 1
+          fi
 
       - uses: actions/setup-python@v5
         with:
@@ -90,6 +102,11 @@ jobs:
             -e 's/^### Removed$/## Fjernet/' \
             -e 's/^### Improved$/## Forbedringer/')
 
+          if [ -z "$(echo "$BODY" | tr -d '[:space:]')" ]; then
+            echo "::error title=Missing changelog entry::CHANGELOG.md must contain a ## [${VERSION}] section before release."
+            exit 1
+          fi
+
           echo "body<<EOF" >> $GITHUB_OUTPUT
           echo "$BODY" >> $GITHUB_OUTPUT
           echo "" >> $GITHUB_OUTPUT
@@ -103,10 +120,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v${{ needs.build-mac.outputs.version }}"
-          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
+          OLD_TAGS=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
             | jq -r '.[].tagName' \
-            | grep -v "^${TAG}$" \
-            | xargs -I{} gh release delete {} --repo "$GITHUB_REPOSITORY" --yes --delete-tag || true
+            | grep -v "^${TAG}$" || true)
+          if [ -n "$OLD_TAGS" ]; then
+            while IFS= read -r OLD_TAG; do
+              gh release delete "$OLD_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            done <<< "$OLD_TAGS"
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -115,3 +136,4 @@ jobs:
           files: artifacts/Txtmanager-mac/Txtmanager.zip
           body: ${{ steps.notes.outputs.body }}
           make_latest: true
+          overwrite_files: false
