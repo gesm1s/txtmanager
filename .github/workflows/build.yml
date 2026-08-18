@@ -2,16 +2,8 @@ name: Build Txtmanager
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - '*.py'
-      - '**/*.py'
-      - '.github/workflows/build.yml'
-      - 'setup.py'
-      - 'entitlements.plist'
-      - 'requirements.txt'
-      - '*.icns'
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 jobs:
@@ -32,14 +24,6 @@ jobs:
         run: |
           VERSION=$(grep -o '"CFBundleVersion": "[0-9.]*"' setup.py | grep -o '[0-9.]*')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Ensure version has not been released
-        run: |
-          TAG="v${{ steps.ver.outputs.version }}"
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "::error title=Version already released::${TAG} already exists. Bump CFBundleVersion and CFBundleShortVersionString in setup.py, then add a matching CHANGELOG entry."
-            exit 1
-          fi
 
       - uses: actions/setup-python@v5
         with:
