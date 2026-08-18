@@ -2,6 +2,13 @@
 
 All notable changes to Txtmanager are documented here.
 
+## [1.4.17] – 2026-08-18
+
+### Fixed
+- Masseoppdateringer lagres nå i én SQLite-transaksjon, slik at en feil ikke etterlater bare noen snarveier oppdatert.
+- XPC-synk forsøker alle operasjoner selv om en tidligere operasjon timer ut, og logger completion-feil med berørt snarvei.
+- Feil under masse-lagring håndteres av dialogen i stedet for å etterlate den uten synlig forklaring.
+
 ## [1.4.16] – 2026-06-10
 
 ### Changed

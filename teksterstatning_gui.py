@@ -335,6 +335,28 @@ def update_item(pk, shortcut, phrase):
     wal_checkpoint()
     LOGGER.info("Updated shortcut: pk=%s shortcut=%s versions=%s", pk, shortcut, _phrase_versions(phrase))
 
+def update_items(changes):
+    """Update several entries atomically and checkpoint WAL once."""
+    con = get_conn()
+    try:
+        for pk, shortcut, phrase in changes:
+            now = _next_timestamp(con)
+            con.execute("""
+                UPDATE ZTEXTREPLACEMENTENTRY
+                SET ZSHORTCUT=?, ZPHRASE=?, ZTIMESTAMP=?, ZNEEDSSAVETOCLOUD=1, Z_OPT=Z_OPT+1
+                WHERE Z_PK=?
+            """, (shortcut, phrase, now, pk))
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+    wal_checkpoint()
+    LOGGER.info("Updated %s shortcuts atomically: %s", len(changes), _summarize_ops([
+        {"shortcut": shortcut} for _pk, shortcut, _phrase in changes
+    ]))
+
 def delete_item(pk):
     con = get_conn()
     con.execute("DELETE FROM ZTEXTREPLACEMENTENTRY WHERE Z_PK=?", (pk,))
@@ -443,6 +465,7 @@ ud.synchronize()
 store    = KSClientStore.alloc().init()
 ops      = data.get("ops") or []
 timed_out = []
+failed = []
 
 for op in ops:
     done    = [False]
@@ -485,9 +508,14 @@ for op in ops:
 
     if not done[0]:
         timed_out.append(op.get("new_shortcut") or op.get("shortcut") or op_type)
+    elif err_val[0] is not None:
+        failed.append({
+            "shortcut": op.get("new_shortcut") or op.get("shortcut") or op_type,
+            "error": str(err_val[0]),
+        })
 
-if timed_out:
-    print(f"XPC timed out for: {timed_out}", file=sys.stderr)
+if timed_out or failed:
+    print(f"XPC operation failures: timed_out={timed_out} failed={failed}", file=sys.stderr)
     try: os.unlink(data_path)
     except OSError: pass
     os._exit(1)
@@ -1052,6 +1080,15 @@ class App(tk.Tk):
     def _status(self, msg):
         self.status_var.set(msg)
 
+    def _run_dialog_action(self, dialog, action):
+        try:
+            action()
+        except Exception as exc:
+            LOGGER.exception("Dialog save failed")
+            messagebox.showerror("Lagring feilet", str(exc), parent=dialog)
+            if dialog.winfo_exists():
+                dialog.destroy()
+
     def _verify_saved_rows(self, expected_rows, retries=3, delay=0.3,
                            delayed_checks=(10, 60), context="save"):
         """Non-blocking verification in background thread."""
@@ -1145,11 +1182,14 @@ class App(tk.Tk):
                for i in affected]
         backup()
         expected = []
+        changes = []
         for item in affected:
             new_phrase = item["phrase"].replace(token, new_val)
-            update_item(item["pk"], item["shortcut"], new_phrase)
-            item["phrase"] = new_phrase
+            changes.append((item["pk"], item["shortcut"], new_phrase))
             expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
+        update_items(changes)
+        for item, (_pk, _shortcut, new_phrase) in zip(affected, changes):
+            item["phrase"] = new_phrase
         stop_keyboard_daemon(ops=ops)
         self._verify_saved_rows(expected, context=f"token replace {token} to {new_val}")
         self._refresh_table()
@@ -1296,11 +1336,14 @@ class App(tk.Tk):
                    for i in affected]
             backup()
             expected = []
+            changes = []
             for item in affected:
                 new_phrase = item["phrase"].replace(old_ver, new_ver)
-                update_item(item["pk"], item["shortcut"], new_phrase)
-                item["phrase"] = new_phrase
+                changes.append((item["pk"], item["shortcut"], new_phrase))
                 expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
+            update_items(changes)
+            for item, (_pk, _shortcut, new_phrase) in zip(affected, changes):
+                item["phrase"] = new_phrase
             stop_keyboard_daemon(ops=ops)
             self._verify_saved_rows(expected, context=f"version bump {old_ver} to {new_ver}")
             self._refresh_table()
@@ -1309,11 +1352,11 @@ class App(tk.Tk):
             LOGGER.info("Version bump applied: old=%s new=%s affected=%s", old_ver, new_ver, len(affected))
             win.destroy()
 
-        new_entry.bind("<Return>", lambda _: do_bump())
+        new_entry.bind("<Return>", lambda _: self._run_dialog_action(win, do_bump))
 
         bf = tk.Frame(win, bg=COLORS["bg"])
         bf.pack(pady=(4, 16))
-        self._make_button(bf, t("vb_apply"), do_bump, COLORS["accent"], "white").pack(side="left", padx=6)
+        self._make_button(bf, t("vb_apply"), lambda: self._run_dialog_action(win, do_bump), COLORS["accent"], "white").pack(side="left", padx=6)
         self._make_button(bf, t("dlg_cancel"), win.destroy, COLORS["secondary"], "white").pack(side="left", padx=6)
 
         self._center_dialog(win, self)
@@ -1373,10 +1416,14 @@ class App(tk.Tk):
                    for item in affected]
             backup()
             expected = []
+            changes = []
             for item in affected:
                 new_phrase = item["phrase"].replace(f, r)
-                update_item(item["pk"], item["shortcut"], new_phrase)
+                changes.append((item["pk"], item["shortcut"], new_phrase))
                 expected.append({"pk": item["pk"], "shortcut": item["shortcut"], "phrase": new_phrase})
+            update_items(changes)
+            for item, (_pk, _shortcut, new_phrase) in zip(affected, changes):
+                item["phrase"] = new_phrase
             stop_keyboard_daemon(ops=ops)
             self._verify_saved_rows(expected, context="find replace")
             self._load()
@@ -1392,7 +1439,7 @@ class App(tk.Tk):
 
         bf = tk.Frame(win, bg=COLORS["bg"])
         bf.grid(row=3, column=0, columnspan=2, pady=16)
-        self._make_button(bf, t("find_btn"),    do_replace,  COLORS["accent"], "white").pack(side="left", padx=6)
+        self._make_button(bf, t("find_btn"),    lambda: self._run_dialog_action(win, do_replace),  COLORS["accent"], "white").pack(side="left", padx=6)
         self._make_button(bf, t("dlg_cancel"),  close_dialog, COLORS["secondary"], "white").pack(side="left", padx=6)
 
         self._center_dialog(win, self)
