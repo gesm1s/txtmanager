@@ -2,12 +2,20 @@
 
 All notable changes to Txtmanager are documented here.
 
+## [1.4.18] – 2026-08-18
+
+### Fixed
+- Added visible sync progress and completion status after every change.
+- Sync failures now show the affected shortcuts and the underlying XPC error in a popup.
+- Sync callbacks follow retries, so the final result is reported instead of being hidden in the log.
+- GitHub releases now keep older releases and publish compact English release notes.
+
 ## [1.4.17] – 2026-08-18
 
 ### Fixed
-- Masseoppdateringer lagres nå i én SQLite-transaksjon, slik at en feil ikke etterlater bare noen snarveier oppdatert.
-- XPC-synk forsøker alle operasjoner selv om en tidligere operasjon timer ut, og logger completion-feil med berørt snarvei.
-- Feil under masse-lagring håndteres av dialogen i stedet for å etterlate den uten synlig forklaring.
+- Batch updates are saved in one SQLite transaction, preventing partial database updates.
+- XPC sync attempts every operation and logs concrete completion errors.
+- Batch-save failures are handled in the dialog instead of leaving it without an explanation.
 
 ## [1.4.16] – 2026-06-10
 

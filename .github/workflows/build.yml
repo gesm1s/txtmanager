@@ -96,11 +96,11 @@ jobs:
             found && /^## \[/{exit}
             found{print}
           " CHANGELOG.md | sed \
-            -e 's/^### Fixed$/## Fikser/' \
-            -e 's/^### Added$/## Nytt/' \
-            -e 's/^### Changed$/## Endringer/' \
-            -e 's/^### Removed$/## Fjernet/' \
-            -e 's/^### Improved$/## Forbedringer/')
+            -e 's/^### Fixed$/## Fixed/' \
+            -e 's/^### Added$/## Added/' \
+            -e 's/^### Changed$/## Changed/' \
+            -e 's/^### Removed$/## Removed/' \
+            -e 's/^### Improved$/## Improved/'
 
           if [ -z "$(echo "$BODY" | tr -d '[:space:]')" ]; then
             echo "::error title=Missing changelog entry::CHANGELOG.md must contain a ## [${VERSION}] section before release."
@@ -114,20 +114,6 @@ jobs:
             echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...v${VERSION}" >> $GITHUB_OUTPUT
           fi
           echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Delete previous releases (keep only latest)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="v${{ needs.build-mac.outputs.version }}"
-          OLD_TAGS=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
-            | jq -r '.[].tagName' \
-            | grep -v "^${TAG}$" || true)
-          if [ -n "$OLD_TAGS" ]; then
-            while IFS= read -r OLD_TAG; do
-              gh release delete "$OLD_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
-            done <<< "$OLD_TAGS"
-          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

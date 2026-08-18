@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TxtManager 1.4.8 for macOS 15+/26
+TxtManager 1.4.18 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
@@ -58,6 +58,10 @@ T = {
                            "en": "✓ Replaced «{a}» → «{b}» in {n} phrases."},
     "status_findreplace": {"no": "✓ Finn/Erstatt: endret {n} fraser.",
                            "en": "✓ Find/Replace: changed {n} phrases."},
+        "status_syncing":    {"no": "Synkroniserer {n} snarveier …", "en": "Syncing {n} shortcuts …"},
+        "status_sync_ok":    {"no": "✓ Synkroniserte {n} snarveier.", "en": "✓ Synced {n} shortcuts."},
+        "status_sync_failed": {"no": "⚠ Synkronisering feilet for: {s}",
+                               "en": "⚠ Sync failed for: {s}"},
     "err_db":             {"no": "Kunne ikke lese databasen:\n{e}",
                            "en": "Could not read database:\n{e}"},
     "err_exists":         {"no": "'{s}' er allerede i bruk.", "en": "'{s}' already exists."},
@@ -134,10 +138,10 @@ def _app_version():
                 os.path.dirname(sys.executable), "..", "Info.plist"
             )
             with open(plist_path, "rb") as f:
-                return plistlib.load(f).get("CFBundleShortVersionString", "1.4.15")
+                return plistlib.load(f).get("CFBundleShortVersionString", "1.4.18")
         except Exception:
             pass
-    return "1.4.15"
+    return "1.4.18"
 
 APP_VERSION = _app_version()
 
@@ -365,7 +369,7 @@ def delete_item(pk):
     wal_checkpoint()
     LOGGER.info("Deleted shortcut: pk=%s", pk)
 
-def stop_keyboard_daemon(ops=None):
+def stop_keyboard_daemon(ops=None, on_complete=None):
     """Sync text replacements to all running apps.
     ops: list of dicts describing the change, e.g.
       {"op": "update", "old_shortcut": ..., "old_phrase": ..., "new_shortcut": ..., "new_phrase": ...}
@@ -380,11 +384,13 @@ def stop_keyboard_daemon(ops=None):
         "Sync requested: items=%s ops=%s op_types=%s shortcuts=%s",
         len(items), len(op_list), op_types, _summarize_ops(op_list),
     )
-    threading.Thread(target=_sync_to_apps, args=(items, ops), daemon=True).start()
+    threading.Thread(
+        target=_sync_to_apps, args=(items, ops, 0, on_complete), daemon=True
+    ).start()
 
 _SYNC_RETRY_DELAYS = [10]
 
-def _sync_to_apps(items, ops=None, _retry=0):
+def _sync_to_apps(items, ops=None, _retry=0, on_complete=None):
     """Sync text replacements to all apps using the private KeyboardServices XPC API.
     ops: list of operation dicts (from stop_keyboard_daemon). When provided, keyboardservicesd
     is updated directly via modifyEntry/addEntries without reading current state first.
@@ -554,7 +560,9 @@ except OSError: pass
                 )
                 timer = threading.Timer(
                     delay,
-                    lambda r=_retry, o=ops: _sync_to_apps(read_items(), o, _retry=r + 1),
+                    lambda r=_retry, o=ops, c=on_complete: _sync_to_apps(
+                        read_items(), o, _retry=r + 1, on_complete=c
+                    ),
                 )
                 timer.daemon = True
                 timer.start()
@@ -562,11 +570,15 @@ except OSError: pass
                 LOGGER.error(
                     "All XPC sync attempts failed -- DB write is the source of truth, file-watch will propagate."
                 )
+                if on_complete:
+                    on_complete(False, stderr_text)
         else:
             LOGGER.info(
                 "XPC sync completed: attempt=%s items=%s ops=%s shortcuts=%s",
                 _retry + 1, len(items), len(ops or []), _summarize_ops(ops or []),
             )
+            if on_complete:
+                on_complete(True, "")
     except Exception:
         LOGGER.exception("EXCEPTION in _sync_to_apps (attempt %s)", _retry + 1)
         if _retry < len(_SYNC_RETRY_DELAYS):
@@ -577,12 +589,16 @@ except OSError: pass
             )
             timer = threading.Timer(
                 delay,
-                lambda r=_retry, o=ops: _sync_to_apps(read_items(), o, _retry=r + 1),
+                lambda r=_retry, o=ops, c=on_complete: _sync_to_apps(
+                    read_items(), o, _retry=r + 1, on_complete=c
+                ),
             )
             timer.daemon = True
             timer.start()
         else:
             LOGGER.error("All sync attempts failed -- giving up.")
+            if on_complete:
+                on_complete(False, "Unexpected sync error; see the TxtManager log.")
 
 def find_repeated_tokens(items):
     patterns = [
@@ -1080,6 +1096,34 @@ class App(tk.Tk):
     def _status(self, msg):
         self.status_var.set(msg)
 
+    def _sync_shortcuts(self, ops, context):
+        self._status(t("status_syncing", n=len(ops)))
+
+        def on_complete(success, detail):
+            self.after(0, lambda: self._sync_finished(
+                success, detail, ops, context
+            ))
+
+        stop_keyboard_daemon(ops=ops, on_complete=on_complete)
+
+    def _sync_finished(self, success, detail, ops, context):
+        if success:
+            LOGGER.info("GUI sync completed: context=%s shortcuts=%s", context, _summarize_ops(ops))
+            self._status(t("status_sync_ok", n=len(ops)))
+            return
+
+        failed_shortcuts = detail or _summarize_ops(ops)
+        LOGGER.error(
+            "GUI sync failed: context=%s shortcuts=%s detail=%s",
+            context, _summarize_ops(ops), detail,
+        )
+        self._status(t("status_sync_failed", s="see popup"))
+        messagebox.showerror(
+            "Sync failed",
+            f"The database was updated, but sync reported an error for {context}:\n\n{failed_shortcuts}",
+            parent=self,
+        )
+
     def _run_dialog_action(self, dialog, action):
         try:
             action()
@@ -1190,7 +1234,7 @@ class App(tk.Tk):
         update_items(changes)
         for item, (_pk, _shortcut, new_phrase) in zip(affected, changes):
             item["phrase"] = new_phrase
-        stop_keyboard_daemon(ops=ops)
+        self._sync_shortcuts(ops, f"token replace {token} to {new_val}")
         self._verify_saved_rows(expected, context=f"token replace {token} to {new_val}")
         self._refresh_table()
         self._refresh_tokens()
@@ -1206,7 +1250,7 @@ class App(tk.Tk):
             return
         backup()
         insert_item(sc, ph)
-        stop_keyboard_daemon(ops=[{"op": "insert", "shortcut": sc, "phrase": ph}])
+        self._sync_shortcuts([{"op": "insert", "shortcut": sc, "phrase": ph}], f"add {sc}")
         self._load()
         self._status(t("status_added", s=sc))
 
@@ -1229,11 +1273,11 @@ class App(tk.Tk):
             return
         backup()
         update_item(item["pk"], new_shortcut, dlg.result[1])
-        stop_keyboard_daemon(ops=[{
+        self._sync_shortcuts([{
             "op": "update",
             "old_shortcut": item["shortcut"], "old_phrase": item["phrase"],
             "new_shortcut": new_shortcut,     "new_phrase": dlg.result[1]
-        }])
+        }], f"edit {new_shortcut}")
         self._verify_saved_rows([
             {"pk": item["pk"], "shortcut": new_shortcut, "phrase": dlg.result[1]}
         ], context=f"edit {new_shortcut}")
@@ -1249,7 +1293,7 @@ class App(tk.Tk):
             return
         backup()
         delete_item(item["pk"])
-        stop_keyboard_daemon(ops=[{"op": "delete", "shortcut": item["shortcut"], "phrase": item["phrase"]}])
+        self._sync_shortcuts([{"op": "delete", "shortcut": item["shortcut"], "phrase": item["phrase"]}], f"delete {item['shortcut']}")
         self._load()
         self._status(t("status_deleted", s=item["shortcut"]))
 
@@ -1344,7 +1388,7 @@ class App(tk.Tk):
             update_items(changes)
             for item, (_pk, _shortcut, new_phrase) in zip(affected, changes):
                 item["phrase"] = new_phrase
-            stop_keyboard_daemon(ops=ops)
+            self._sync_shortcuts(ops, f"version bump {old_ver} to {new_ver}")
             self._verify_saved_rows(expected, context=f"version bump {old_ver} to {new_ver}")
             self._refresh_table()
             self._refresh_tokens()
@@ -1424,7 +1468,7 @@ class App(tk.Tk):
             update_items(changes)
             for item, (_pk, _shortcut, new_phrase) in zip(affected, changes):
                 item["phrase"] = new_phrase
-            stop_keyboard_daemon(ops=ops)
+            self._sync_shortcuts(ops, "find replace")
             self._verify_saved_rows(expected, context="find replace")
             self._load()
             self._status(t("status_findreplace", n=len(affected)))
