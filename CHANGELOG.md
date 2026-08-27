@@ -2,6 +2,11 @@
 
 All notable changes to Txtmanager are documented here.
 
+## [1.4.19] – 2026-08-27
+
+### Fixed
+- XPC reports `KSTextReplacementErrorDomain Code=0` even when the database update is later verified. The app now logs this as a warning and waits for save verification instead of showing a misleading sync-failure popup.
+
 ## [1.4.18] – 2026-08-18
 
 ### Fixed

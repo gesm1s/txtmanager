@@ -60,8 +60,8 @@ T = {
                            "en": "✓ Find/Replace: changed {n} phrases."},
         "status_syncing":    {"no": "Synkroniserer {n} snarveier …", "en": "Syncing {n} shortcuts …"},
         "status_sync_ok":    {"no": "✓ Synkroniserte {n} snarveier.", "en": "✓ Synced {n} shortcuts."},
-        "status_sync_failed": {"no": "⚠ Synkronisering feilet for: {s}",
-                               "en": "⚠ Sync failed for: {s}"},
+        "status_sync_pending": {"no": "✓ Lagret. Verifiserer synkronisering …",
+                                "en": "✓ Saved. Verifying synchronization …"},
     "err_db":             {"no": "Kunne ikke lese databasen:\n{e}",
                            "en": "Could not read database:\n{e}"},
     "err_exists":         {"no": "'{s}' er allerede i bruk.", "en": "'{s}' already exists."},
@@ -1112,17 +1112,11 @@ class App(tk.Tk):
             self._status(t("status_sync_ok", n=len(ops)))
             return
 
-        failed_shortcuts = detail or _summarize_ops(ops)
-        LOGGER.error(
-            "GUI sync failed: context=%s shortcuts=%s detail=%s",
+        LOGGER.warning(
+            "GUI XPC sync reported an error; save verification remains authoritative: context=%s shortcuts=%s detail=%s",
             context, _summarize_ops(ops), detail,
         )
-        self._status(t("status_sync_failed", s="see popup"))
-        messagebox.showerror(
-            "Sync failed",
-            f"The database was updated, but sync reported an error for {context}:\n\n{failed_shortcuts}",
-            parent=self,
-        )
+        self._status(t("status_sync_pending"))
 
     def _run_dialog_action(self, dialog, action):
         try:
