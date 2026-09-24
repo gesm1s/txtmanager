@@ -73,7 +73,7 @@ jobs:
         id: notes
         run: |
           VERSION="${{ needs.build-mac.outputs.version }}"
-          PREV_TAG=$(git tag --sort=-version:refname | head -1)
+          PREV_TAG=$(git tag --sort=-version:refname | grep -Fxv "v${VERSION}" | head -1)
 
           BODY=$(awk "
             /^## \[${VERSION}\]/{found=1; next}
