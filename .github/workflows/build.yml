@@ -84,7 +84,7 @@ jobs:
             -e 's/^### Added$/## Added/' \
             -e 's/^### Changed$/## Changed/' \
             -e 's/^### Removed$/## Removed/' \
-            -e 's/^### Improved$/## Improved/'
+            -e 's/^### Improved$/## Improved/')
 
           if [ -z "$(echo "$BODY" | tr -d '[:space:]')" ]; then
             echo "::error title=Missing changelog entry::CHANGELOG.md must contain a ## [${VERSION}] section before release."
