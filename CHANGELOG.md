@@ -2,6 +2,12 @@
 
 All notable changes to Txtmanager are documented here.
 
+## [1.4.20] – 2026-09-24
+
+### Fixed
+- Treat the verified `KSTextReplacementErrorDomain Code=0` completion response as successful, avoiding a false sync-failure status while preserving retries for real XPC errors and timeouts.
+- Preserve the selected version while entering a version-bump value. Invalid or missing selections now show an explanation instead of silently doing nothing.
+
 ## [1.4.19] – 2026-08-27
 
 ### Fixed
@@ -166,7 +172,8 @@ All notable changes to Txtmanager are documented here.
 - Tospråklig støtte (norsk/engelsk)
 - Ikon
 
-[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.15...HEAD
+[Unreleased]: https://github.com/gesm1s/txtmanager/compare/v1.4.20...HEAD
+[1.4.20]: https://github.com/gesm1s/txtmanager/compare/v1.4.19...v1.4.20
 [1.4.15]: https://github.com/gesm1s/txtmanager/compare/v1.4.14...v1.4.15
 [1.4.14]: https://github.com/gesm1s/txtmanager/compare/v1.4.13...v1.4.14
 [1.4.13]: https://github.com/gesm1s/txtmanager/compare/v1.4.12...v1.4.13

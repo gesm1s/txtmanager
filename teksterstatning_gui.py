@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-TxtManager 1.4.18 for macOS 15+/26
+TxtManager 1.4.20 for macOS 15+/26
 - Reads/writes directly to ~/Library/KeyboardServices/TextReplacements.db
 - No export/import needed
 - Syncs automatically to iPhone/iPad via iCloud/CloudKit
@@ -109,6 +109,11 @@ T = {
     "vb_apply":           {"no": "Oppdater alle",          "en": "Update all"},
     "vb_no_versions":     {"no": "Fant ingen versjonsnumre i snarveiene.", "en": "No version numbers found in shortcuts."},
     "vb_no_versions_t":   {"no": "Ingen versjoner",       "en": "No versions"},
+    "vb_select_version":  {"no": "Velg nåværende versjon fra listen.", "en": "Select the current version from the list."},
+    "vb_select_version_t": {"no": "Velg versjon",         "en": "Select version"},
+    "vb_invalid_new":     {"no": "Skriv inn en ny versjon som er forskjellig fra den nåværende.",
+                            "en": "Enter a new version that differs from the current version."},
+    "vb_invalid_new_t":   {"no": "Ugyldig ny versjon",    "en": "Invalid new version"},
     "vb_done":            {"no": "✓ Oppdaterte versjon «{a}» → «{b}» i {n} snarveier.",
                            "en": "✓ Updated version «{a}» → «{b}» in {n} shortcuts."},
     "update_available":   {"no": "Ny versjon tilgjengelig: {v}",
@@ -138,10 +143,10 @@ def _app_version():
                 os.path.dirname(sys.executable), "..", "Info.plist"
             )
             with open(plist_path, "rb") as f:
-                return plistlib.load(f).get("CFBundleShortVersionString", "1.4.18")
+                return plistlib.load(f).get("CFBundleShortVersionString", "1.4.20")
         except Exception:
             pass
-    return "1.4.18"
+    return "1.4.20"
 
 APP_VERSION = _app_version()
 
@@ -472,6 +477,14 @@ store    = KSClientStore.alloc().init()
 ops      = data.get("ops") or []
 timed_out = []
 failed = []
+benign_completion_errors = []
+
+def _is_benign_completion_error(error):
+    return (
+        error is not None
+        and "KSTextReplacementErrorDomain" in str(error)
+        and "Code=0" in str(error)
+    )
 
 for op in ops:
     done    = [False]
@@ -515,16 +528,26 @@ for op in ops:
     if not done[0]:
         timed_out.append(op.get("new_shortcut") or op.get("shortcut") or op_type)
     elif err_val[0] is not None:
-        failed.append({
+        result = {
             "shortcut": op.get("new_shortcut") or op.get("shortcut") or op_type,
             "error": str(err_val[0]),
-        })
+        }
+        if _is_benign_completion_error(err_val[0]):
+            benign_completion_errors.append(result)
+        else:
+            failed.append(result)
 
 if timed_out or failed:
     print(f"XPC operation failures: timed_out={timed_out} failed={failed}", file=sys.stderr)
     try: os.unlink(data_path)
     except OSError: pass
     os._exit(1)
+
+if benign_completion_errors:
+    print(
+        f"XPC completion returned benign code 0 for: {benign_completion_errors}",
+        file=sys.stderr,
+    )
 
 if not ops:
     print("XPC step 2 skipped: no ops", file=sys.stderr)
@@ -573,10 +596,13 @@ except OSError: pass
                 if on_complete:
                     on_complete(False, stderr_text)
         else:
+            stderr_text = result.stderr.decode(errors="replace").strip()
             LOGGER.info(
                 "XPC sync completed: attempt=%s items=%s ops=%s shortcuts=%s",
                 _retry + 1, len(items), len(ops or []), _summarize_ops(ops or []),
             )
+            if stderr_text:
+                LOGGER.info("XPC sync completion detail: %s", stderr_text)
             if on_complete:
                 on_complete(True, "")
     except Exception:
@@ -1319,7 +1345,8 @@ class App(tk.Tk):
         list_frame.pack(fill="both", padx=20, pady=(0, 8))
         ver_list = tk.Listbox(list_frame, font=FONT, relief="flat", bd=0, bg=COLORS["card"],
                               selectbackground=COLORS["selected"], selectforeground="white",
-                              activestyle="none", highlightthickness=0, height=min(8, len(versions)))
+                              activestyle="none", highlightthickness=0, exportselection=False,
+                              height=min(8, len(versions)))
         ver_list.pack(fill="both", padx=1, pady=1)
         for v, c in versions:
             ver_list.insert("end", f"{v}  ({c} snarveier)" if LANG == "no" else f"{v}  ({c} shortcuts)")
@@ -1358,10 +1385,14 @@ class App(tk.Tk):
         def do_bump():
             idx = ver_list.curselection()
             if not idx:
+                LOGGER.warning("Version bump ignored: no current version selected")
+                messagebox.showwarning(t("vb_select_version_t"), t("vb_select_version"), parent=win)
                 return
             old_ver = versions[idx[0]][0]
             new_ver = new_ver_var.get().strip()
             if not new_ver or new_ver == old_ver:
+                LOGGER.warning("Version bump ignored: old=%s new=%s", old_ver, new_ver or "<empty>")
+                messagebox.showwarning(t("vb_invalid_new_t"), t("vb_invalid_new"), parent=win)
                 return
             affected = [i for i in self.items if old_ver in i.get("phrase", "")]
             LOGGER.info(
